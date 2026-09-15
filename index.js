@@ -33,6 +33,32 @@ async function connectDB() {
 
 connectDB();
 
+// Root Status Route
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>BilluFit Cloud Server</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0b0f19; color: #f8fafc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+          .card { background: #161e2e; border: 1px solid #22c55e44; border-radius: 16px; padding: 40px; text-align: center; max-width: 480px; box-shadow: 0 20px 40px rgba(0,0,0,0.5); }
+          h1 { color: #22c55e; margin-bottom: 8px; font-size: 26px; }
+          p { color: #94a3b8; font-size: 15px; line-height: 1.6; }
+          .badge { display: inline-block; background: #22c55e22; color: #22c55e; padding: 6px 14px; border-radius: 999px; font-weight: bold; margin-top: 15px; border: 1px solid #22c55e; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <h1>⚡ BilluFit Cloud Server</h1>
+          <p>The 24/7 backend is running live on Render and connected directly to MongoDB Atlas.</p>
+          <div class="badge">🟢 MongoDB: ${db ? 'Connected' : 'Connecting...'}</div>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
 // Health Check
 app.get('/api/health', (req, res) => {
   res.json({
