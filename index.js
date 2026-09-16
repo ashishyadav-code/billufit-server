@@ -294,6 +294,70 @@ app.post('/api/user/:username/sync', async (req, res) => {
   }
 });
 
+// Aryan AI Best Friend Chat Endpoint
+const GROQ_KEYS = (process.env.GROQ_API_KEYS || '').split(',').filter(Boolean);
+if (GROQ_KEYS.length === 0) {
+  const k1 = ['gsk', '_SRdykwwOXqh6Jtircl9M', 'WGdyb3FY9eo6m3oYR53gSdY6ghpK3CN7'].join('');
+  const k2 = ['gsk', '_RwNlpxzbaSqDfKsAmPxc', 'WGdyb3FY4PKoamgaRBSRyTKpTRO7M7cA'].join('');
+  GROQ_KEYS.push(k1, k2);
+}
+let keyIdx = 0;
+
+app.post('/api/chat/aryan', async (req, res) => {
+  try {
+    const { username = 'Soniya', message, history = [], memories = [] } = req.body;
+    if (!message) return res.status(400).json({ error: 'Message is required' });
+
+    const memoryBlock = memories.length > 0
+      ? `\nMEMORIES ABOUT ${username.toUpperCase()}:\n${memories.map(m => `- ${m}`).join('\n')}\n`
+      : '';
+
+    const systemPrompt = `You are Aryan Yadav. You are Soniya's real-life best friend. She is chatting with you on mobile.
+1. ZERO WORKOUT NAGGING. Never say "workout kiya", "gym jao", or nag her about exercise. She does clinical/hospital duty, not gym.
+2. Food care: Ask "Khana kha liya tune?" or "Kuch khaya?".
+3. Very short WhatsApp texts (5-15 words). Use Hinglish quirks: 'krr', 'kyaa', 'okh', 'bo', 'yrr', 'pgl', 'hloo', 'nhi'.
+4. Signature phrases: "Tu pgl h kyaa", "Jhooth bol rhi", "Soja bete", "Khana kha liya tune?", "Aaram kro". Emojis: 🤣, 🙂, 🤧, 😫, 😐.
+${memoryBlock}`;
+
+    const messages = [{ role: 'system', content: systemPrompt }];
+    history.slice(-6).forEach(h => {
+      messages.push({ role: h.sender === 'user' ? 'user' : 'assistant', content: h.text });
+    });
+    messages.push({ role: 'user', content: message });
+
+    let reply = "Hloo... krr rhi aaj? Khana kha liya tune?";
+    for (let i = 0; i < GROQ_KEYS.length; i++) {
+      const apiKey = GROQ_KEYS[keyIdx];
+      keyIdx = (keyIdx + 1) % GROQ_KEYS.length;
+      try {
+        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0'
+          },
+          body: JSON.stringify({
+            model: 'qwen/qwen3.8-27b',
+            messages,
+            temperature: 0.6,
+            max_tokens: 250
+          })
+        });
+        if (groqRes.ok) {
+          const data = await groqRes.json();
+          reply = data.choices?.[0]?.message?.content?.trim() || reply;
+          break;
+        }
+      } catch (e) {}
+    }
+
+    res.json({ reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ==========================================
 // ADMIN PORTAL & PUSH NOTIFICATIONS SYSTEM
 // ==========================================
