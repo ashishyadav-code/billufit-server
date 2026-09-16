@@ -15,6 +15,7 @@ let db = null;
 let usersCollection = null;
 let mealsCollection = null;
 let memoryCollection = null;
+let memoriesCollection = null;
 let notificationsCollection = null;
 
 async function connectDB() {
@@ -24,8 +25,9 @@ async function connectDB() {
     usersCollection = db.collection('users');
     mealsCollection = db.collection('meals');
     memoryCollection = db.collection('memory');
+    memoriesCollection = db.collection('memories');
     notificationsCollection = db.collection('notifications');
-    console.log('⚡ [MongoDB Atlas] Connected successfully to billufit_db (users, meals, memory, notifications)');
+    console.log('⚡ [MongoDB Atlas] Connected successfully to billufit_db (users, meals, memory, memories, notifications)');
   } catch (err) {
     console.error('❌ [MongoDB Error] Failed to connect:', err.message);
   }
@@ -303,24 +305,126 @@ if (GROQ_KEYS.length === 0) {
 }
 let keyIdx = 0;
 
-app.post('/api/chat/aryan', async (req, res) => {
-  try {
-    const { username = 'Soniya', message, history = [], memories = [] } = req.body;
-    if (!message) return res.status(400).json({ error: 'Message is required' });
+// Hybrid Semantic Memory Scoring Function
+function computeHybridScore(query, mem) {
+  if (!query || !mem) return 0;
+  const qWords = new Set(query.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 1));
+  let score = 0;
 
-    // Auto-fetch memories from MongoDB if not provided
-    let allMemories = memories;
-    if (allMemories.length === 0 && memoryCollection) {
-      const userMemDoc = await memoryCollection.findOne({
-        $or: [{ username: username.toLowerCase() }, { username: 'soniya' }]
-      });
-      if (userMemDoc && userMemDoc.longTermNotes) {
-        allMemories = userMemDoc.longTermNotes;
+  // 1. Keyword hits (weighted 2.0 per exact keyword, 0.8 per partial word)
+  if (Array.isArray(mem.keywords)) {
+    for (const kw of mem.keywords) {
+      const kwParts = kw.toLowerCase().split(/\s+/);
+      if (kwParts.every(p => qWords.has(p))) {
+        score += 2.0;
+      } else if (kwParts.some(p => qWords.has(p))) {
+        score += 0.8;
       }
     }
+  }
 
-    const memoryBlock = allMemories.length > 0
-      ? `\nFACTS & MEMORIES YOU REMEMBER ABOUT ${username.toUpperCase()}:\n${allMemories.map(m => `- ${m}`).join('\n')}\n`
+  // 2. Fact text overlap
+  if (mem.fact) {
+    const factWords = new Set(mem.fact.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2));
+    for (const qw of qWords) {
+      if (factWords.has(qw)) score += 0.5;
+    }
+  }
+
+  return score;
+}
+
+// Background Intelligent Fact & Keyword Extractor
+async function extractFactAndKeywordsAsync(username, message) {
+  try {
+    const cleanMsg = (message || '').trim();
+    if (cleanMsg.length < 5) return;
+
+    // Quick filter for obvious trivial one-liners
+    const trivialRegex = /^(hloo|hello|hey|hi|haa|haan|acha|accha|theek|thik|ok|okh|byy|bye|gn|gm|hmm|hm|kya|kuch nhi|kuch nahi|sach|chutiya|pagal|pgl)$/i;
+    if (trivialRegex.test(cleanMsg)) return;
+
+    const extractorPrompt = `You are a Memory Gatekeeper.
+Analyze this message from Soniya and decide if it contains a PERMANENT FACT or IMPORTANT EVENT about her life, hospital duty, health, food, studies, or feelings.
+Trivial greetings, short banter, insults -> hasFact: false.
+If meaningful fact -> hasFact: true, write a crisp 1-sentence fact in English, and extract 4-6 Hinglish/English search keywords.
+
+Respond ONLY in valid JSON:
+{
+  "hasFact": boolean,
+  "category": "clinical_duty" | "health_fatigue" | "food_preference" | "studies" | "personal_life" | null,
+  "fact": string | null,
+  "keywords": string[] | null,
+  "importance": number (1 to 5) | null
+}`;
+
+    const apiKey = GROQ_KEYS[keyIdx % GROQ_KEYS.length];
+    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0'
+      },
+      body: JSON.stringify({
+        model: 'qwen/qwen3.8-27b',
+        messages: [
+          { role: 'system', content: extractorPrompt },
+          { role: 'user', content: cleanMsg }
+        ],
+        temperature: 0.1,
+        max_tokens: 150
+      })
+    });
+
+    if (groqRes.ok) {
+      const data = await groqRes.json();
+      const content = data.choices?.[0]?.message?.content?.trim();
+      const parsed = JSON.parse(content.replace(/```json|```/g, '').trim());
+
+      if (parsed.hasFact && parsed.fact && memoriesCollection) {
+        await memoriesCollection.insertOne({
+          username: username.toLowerCase(),
+          fact: parsed.fact,
+          category: parsed.category || 'general',
+          keywords: parsed.keywords || [],
+          importance: parsed.importance || 3,
+          sourceMessage: cleanMsg,
+          createdAt: new Date()
+        });
+        console.log(`🧠 [Memory Extracted for ${username}]: ${parsed.fact}`);
+      }
+    }
+  } catch (err) {
+    console.warn('Memory extraction error (non-fatal):', err.message);
+  }
+}
+
+// Aryan AI Best Friend Chat Endpoint with Hybrid Semantic Memory
+app.post('/api/chat/aryan', async (req, res) => {
+  try {
+    const { username = 'Soniya', message, history = [] } = req.body;
+    if (!message) return res.status(400).json({ error: 'Message is required' });
+
+    // Step 1: Semantic Search over Stored Memories
+    let matchedMemories = [];
+    if (memoriesCollection) {
+      const allDocs = await memoriesCollection.find({
+        $or: [{ username: username.toLowerCase() }, { username: 'soniya' }]
+      }).toArray();
+
+      const scored = allDocs.map(doc => ({
+        doc,
+        score: computeHybridScore(message, doc)
+      })).filter(item => item.score >= 1.0);
+
+      scored.sort((a, b) => b.score - a.score);
+      matchedMemories = scored.slice(0, 4).map(item => item.doc.fact);
+    }
+
+    // Step 2: Build Memory Context (Only if relevant memories matched)
+    const memoryBlock = matchedMemories.length > 0
+      ? `\nRELEVANT RECALLED MEMORIES ABOUT ${username.toUpperCase()}:\n${matchedMemories.map(m => `- ${m}`).join('\n')}\n`
       : '';
 
     const systemPrompt = `You are Aryan Yadav. You are ${username}'s real-life best friend. You two talk on WhatsApp.
@@ -374,58 +478,99 @@ ${memoryBlock}`;
       } catch (e) {}
     }
 
-    res.json({ reply, memoriesUsed: allMemories });
+    // Return reply immediately to user (instant 0.3s response)
+    res.json({ reply, matchedMemories });
+
+    // Step 4: Asynchronously analyze message in background for new long-term facts
+    extractFactAndKeywordsAsync(username, message);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get All Memories from MongoDB Atlas
+// Get All Memories from MongoDB Atlas (Both atomic collection and legacy notes)
 app.get('/api/admin/memories', async (req, res) => {
   try {
-    if (!memoryCollection) return res.status(503).json({ error: 'DB connecting' });
-    const docs = await memoryCollection.find({}).toArray();
+    const atomicMemories = memoriesCollection ? await memoriesCollection.find({}).toArray() : [];
+    const legacyMemories = memoryCollection ? await memoryCollection.find({}).toArray() : [];
     res.json({
       success: true,
       database: 'billufit_db',
-      collection: 'memory',
-      count: docs.length,
-      memories: docs
+      atomicCount: atomicMemories.length,
+      atomicMemories,
+      legacyMemories
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-// Seed / Update Soniya's Official WhatsApp Memories in MongoDB
+// Seed / Reset Soniya's Core Historical Memories in MongoDB Atlas
 app.post('/api/admin/memories/seed', async (req, res) => {
   try {
-    if (!memoryCollection) return res.status(503).json({ error: 'DB connecting' });
-    const defaultSoniyaMemories = [
-      "Clinical/Duty: Soniya is a nursing/medical student who does clinical postings and Operation Theater (OT) shifts.",
-      "Health/Tiredness: Standing long hours in OT makes her physically exhausted; Aryan reminds her to take care.",
-      "Eating Habits: Tends to skip meals when tired; Aryan frequently checks if she ate food properly.",
-      "Studies/Exams: Has practical exams, assignments, and clinical duties.",
-      "Likes/Dislikes: Likes cold coffee and chocolate protein; avoids heavy oily meals when fatigued.",
-      "Skin/Face banter: Uses besan on face; Aryan famously roasted her 'Tu regmaal use krr face pe sbse best... 🤣'",
-      "Relationship Dynamic: Aryan is Soniya's real-life best friend. She teases him about his height, Aryan teases her drama.",
-      "Signature Apology: When Soniya gets irritated, Aryan playfully placates her: 'Sorry naa yrr', 'Gandi baat hoti hai', 'Tu pgl h kyaa'."
+    if (!memoriesCollection) return res.status(503).json({ error: 'DB connecting' });
+
+    const coreMemories = [
+      {
+        username: 'soniya',
+        fact: "Soniya is a nursing/medical student who does clinical postings and Operation Theater (OT) shifts.",
+        category: "clinical_duty",
+        keywords: ["clinical", "duty", "ot", "operation theater", "posting", "hospital", "patient", "ward"],
+        importance: 5
+      },
+      {
+        username: 'soniya',
+        fact: "Standing long hours in OT makes Soniya physically exhausted and gives her severe headaches.",
+        category: "health_fatigue",
+        keywords: ["sar dard", "headache", "thak", "exhausted", "pain", "dard", "khade rehna"],
+        importance: 4
+      },
+      {
+        username: 'soniya',
+        fact: "Soniya often forgets or delays meals when exhausted from duty; Aryan constantly checks if she ate.",
+        category: "food_habits",
+        keywords: ["khana", "khaya", "bhook", "dinner", "lunch", "skip", "kha lo"],
+        importance: 4
+      },
+      {
+        username: 'soniya',
+        fact: "Soniya has regular practical exams, assignments, and academic submissions.",
+        category: "studies",
+        keywords: ["exam", "practical", "padhna", "study", "assignment", "viva", "test"],
+        importance: 4
+      },
+      {
+        username: 'soniya',
+        fact: "Soniya prefers cold coffee and chocolate protein; she dislikes bitter gourd (karela).",
+        category: "food_preference",
+        keywords: ["cold coffee", "chocolate", "protein", "karela", "favourite", "pasand"],
+        importance: 3
+      },
+      {
+        username: 'soniya',
+        fact: "Soniya uses besan on her face; Aryan famously roasted her 'Tu regmaal use krr face pe sbse best... 🤣'.",
+        category: "inside_joke",
+        keywords: ["besan", "face", "regmaal", "shampoo", "roast", "chehra"],
+        importance: 3
+      },
+      {
+        username: 'soniya',
+        fact: "Aryan is Soniya's real best friend; she teases his height and Aryan playfully placates her when she is moody with 'Sorry naa yrr', 'Tu pgl h kyaa'.",
+        category: "relationship_dynamic",
+        keywords: ["aryan", "best friend", "height", "sorry", "pgl", "gussa", "tease"],
+        importance: 5
+      }
     ];
 
-    await memoryCollection.updateOne(
-      { username: 'soniya' },
-      {
-        $set: {
-          username: 'soniya',
-          name: 'Soniya',
-          longTermNotes: defaultSoniyaMemories,
-          updatedAt: new Date()
-        }
-      },
-      { upsert: true }
-    );
+    await memoriesCollection.deleteMany({ username: 'soniya' });
+    await memoriesCollection.insertMany(coreMemories.map(m => ({ ...m, createdAt: new Date() })));
 
-    res.json({ success: true, message: 'Seeded Soniya memories in MongoDB Atlas', memories: defaultSoniyaMemories });
+    res.json({
+      success: true,
+      message: 'Successfully seeded 7 atomic core memories with search keywords in MongoDB Atlas',
+      count: coreMemories.length,
+      memories: coreMemories
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
