@@ -308,24 +308,46 @@ app.post('/api/chat/aryan', async (req, res) => {
     const { username = 'Soniya', message, history = [], memories = [] } = req.body;
     if (!message) return res.status(400).json({ error: 'Message is required' });
 
-    const memoryBlock = memories.length > 0
-      ? `\nMEMORIES ABOUT ${username.toUpperCase()}:\n${memories.map(m => `- ${m}`).join('\n')}\n`
+    // Auto-fetch memories from MongoDB if not provided
+    let allMemories = memories;
+    if (allMemories.length === 0 && memoryCollection) {
+      const userMemDoc = await memoryCollection.findOne({
+        $or: [{ username: username.toLowerCase() }, { username: 'soniya' }]
+      });
+      if (userMemDoc && userMemDoc.longTermNotes) {
+        allMemories = userMemDoc.longTermNotes;
+      }
+    }
+
+    const memoryBlock = allMemories.length > 0
+      ? `\nFACTS & MEMORIES YOU REMEMBER ABOUT ${username.toUpperCase()}:\n${allMemories.map(m => `- ${m}`).join('\n')}\n`
       : '';
 
-    const systemPrompt = `You are Aryan Yadav. You are Soniya's real-life best friend. She is chatting with you on mobile.
-1. ZERO WORKOUT NAGGING. Never say "workout kiya", "gym jao", or nag her about exercise. She does clinical/hospital duty, not gym.
-2. Food care: Ask "Khana kha liya tune?" or "Kuch khaya?".
-3. Very short WhatsApp texts (5-15 words). Use Hinglish quirks: 'krr', 'kyaa', 'okh', 'bo', 'yrr', 'pgl', 'hloo', 'nhi'.
-4. Signature phrases: "Tu pgl h kyaa", "Jhooth bol rhi", "Soja bete", "Khana kha liya tune?", "Aaram kro". Emojis: 🤣, 🙂, 🤧, 😫, 😐.
+    const systemPrompt = `You are Aryan Yadav. You are ${username}'s real-life best friend. You two talk on WhatsApp.
+
+CRITICAL SITUATIONAL COMMON SENSE (DO NOT BE A DUMB BOT):
+1. SITUATIONAL AWARENESS:
+   - If Soniya says she is GOING to duty/hospital/college -> NEVER say "aaram kro" or nag her about food! Say: "Achha jaa dhyan se jaana... kab tak khatam hogi?" or "Okh aaram se jaana".
+   - If Soniya is CURRENTLY studying -> Say: "Okh padh tu, disturb nhi krr rha."
+   - If Soniya is angry / irritated (e.g. "tu chutiya he kya", "gussa hu") -> React playfully like real Aryan: "Aree gussa kyu ho rhi h baba 🤣 jaa dhyan se", or "Pgl h kyaa... gussa mt ho". Do NOT repeat canned apologies or say "aaram kro".
+2. ZERO WORKOUT NAGGING: Never say "workout", "gym", "exercise" unless she asks.
+3. ANTI-REPETITION RULE:
+   - If you already asked "khana khaya" or she already answered about food, DO NOT ASK IT AGAIN!
+   - Move the conversation forward naturally.
+4. TEXTING CADENCE:
+   - Very short WhatsApp messages (5 to 12 words max).
+   - Spellings: 'krr', 'kyaa', 'okh', 'bo', 'yrr', 'pgl', 'hloo', 'nhi'.
+   - Signature lines: "Tu pgl h kyaa", "Jhooth bol rhi", "Soja bete", "Gandi baat hoti hai", "Aaram kro" (only if she's tired at home), "Khayal rakho".
+   - Emojis: 🤣, 🙂, 🤧, 😫, 😬, 😶, 😐, 🤡, 🫠, 🫣.
 ${memoryBlock}`;
 
     const messages = [{ role: 'system', content: systemPrompt }];
-    history.slice(-6).forEach(h => {
+    history.slice(-8).forEach(h => {
       messages.push({ role: h.sender === 'user' ? 'user' : 'assistant', content: h.text });
     });
     messages.push({ role: 'user', content: message });
 
-    let reply = "Hloo... krr rhi aaj? Khana kha liya tune?";
+    let reply = "Hloo... krr rhi aaj? Duty se aa gayi?";
     for (let i = 0; i < GROQ_KEYS.length; i++) {
       const apiKey = GROQ_KEYS[keyIdx];
       keyIdx = (keyIdx + 1) % GROQ_KEYS.length;
@@ -341,7 +363,7 @@ ${memoryBlock}`;
             model: 'qwen/qwen3.8-27b',
             messages,
             temperature: 0.6,
-            max_tokens: 250
+            max_tokens: 200
           })
         });
         if (groqRes.ok) {
@@ -352,9 +374,60 @@ ${memoryBlock}`;
       } catch (e) {}
     }
 
-    res.json({ reply });
+    res.json({ reply, memoriesUsed: allMemories });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Get All Memories from MongoDB Atlas
+app.get('/api/admin/memories', async (req, res) => {
+  try {
+    if (!memoryCollection) return res.status(503).json({ error: 'DB connecting' });
+    const docs = await memoryCollection.find({}).toArray();
+    res.json({
+      success: true,
+      database: 'billufit_db',
+      collection: 'memory',
+      count: docs.length,
+      memories: docs
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Seed / Update Soniya's Official WhatsApp Memories in MongoDB
+app.post('/api/admin/memories/seed', async (req, res) => {
+  try {
+    if (!memoryCollection) return res.status(503).json({ error: 'DB connecting' });
+    const defaultSoniyaMemories = [
+      "Clinical/Duty: Soniya is a nursing/medical student who does clinical postings and Operation Theater (OT) shifts.",
+      "Health/Tiredness: Standing long hours in OT makes her physically exhausted; Aryan reminds her to take care.",
+      "Eating Habits: Tends to skip meals when tired; Aryan frequently checks if she ate food properly.",
+      "Studies/Exams: Has practical exams, assignments, and clinical duties.",
+      "Likes/Dislikes: Likes cold coffee and chocolate protein; avoids heavy oily meals when fatigued.",
+      "Skin/Face banter: Uses besan on face; Aryan famously roasted her 'Tu regmaal use krr face pe sbse best... 🤣'",
+      "Relationship Dynamic: Aryan is Soniya's real-life best friend. She teases him about his height, Aryan teases her drama.",
+      "Signature Apology: When Soniya gets irritated, Aryan playfully placates her: 'Sorry naa yrr', 'Gandi baat hoti hai', 'Tu pgl h kyaa'."
+    ];
+
+    await memoryCollection.updateOne(
+      { username: 'soniya' },
+      {
+        $set: {
+          username: 'soniya',
+          name: 'Soniya',
+          longTermNotes: defaultSoniyaMemories,
+          updatedAt: new Date()
+        }
+      },
+      { upsert: true }
+    );
+
+    res.json({ success: true, message: 'Seeded Soniya memories in MongoDB Atlas', memories: defaultSoniyaMemories });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
