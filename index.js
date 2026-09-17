@@ -434,98 +434,156 @@ async function extractFactAndKeywordsAsync(username, message) {
     const trivialRegex = /^(hloo|hello|hey|hi|haa|haan|acha|accha|theek|thik|ok|okh|byy|bye|gn|gm|hmm|hm|kya|kuch nhi|kuch nahi|sach)$/i;
     if (trivialRegex.test(cleanMsg)) return;
 
-    // Pick active key from dynamic key pool
-    let apiKey = GROQ_KEYS[0];
-    const nowTime = Date.now();
-    const usableKeys = cachedApiKeys.filter(k => k.status !== 'exhausted' || (k.exhaustedUntil && new Date(k.exhaustedUntil).getTime() < nowTime));
-    if (usableKeys.length > 0) {
-      apiKey = usableKeys[0].key;
-    } else if (cachedApiKeys.length > 0) {
-      apiKey = cachedApiKeys[0].key;
+    // ─── RULE-BASED INSTANT PERSONA UPDATE (works even if ALL LLMs are 429) ──────
+    // This ensures dynamic_persona always reflects critical life events immediately
+    const msgLower = cleanMsg.toLowerCase();
+    let ruleBasedRelStatus = null;
+    let ruleBasedMood = null;
+
+    if (
+      msgLower.includes('dhoka') || msgLower.includes('cheat') ||
+      msgLower.includes('chhod diya') || msgLower.includes('chod diya') ||
+      (msgLower.includes('abhishek') && (msgLower.includes('ladki') || msgLower.includes('kisi') || msgLower.includes('aur')))
+    ) {
+      ruleBasedRelStatus = 'Abhishek cheated on Soniya; she is heartbroken and needs princess treatment';
+      ruleBasedMood = 'heartbroken';
+    } else if (msgLower.includes('barbad') || msgLower.includes('mar jau') || msgLower.includes('kya karu')) {
+      ruleBasedMood = 'devastated';
+    } else if (msgLower.includes('ro rhi') || msgLower.includes('rona') || msgLower.includes('dil toot')) {
+      ruleBasedMood = 'crying/sad';
+    } else if (msgLower.includes('khush') || msgLower.includes('maza') || msgLower.includes('accha lag')) {
+      ruleBasedMood = 'happy';
+    } else if (msgLower.includes('duty') || msgLower.includes('hospital') || msgLower.includes('nursing')) {
+      ruleBasedMood = 'busy/working';
     }
+
+    if (dynamicPersonaCollection && (ruleBasedRelStatus || ruleBasedMood)) {
+      const ruleDoc = { lastUpdated: new Date() };
+      if (ruleBasedRelStatus) ruleDoc.relationshipStatus = ruleBasedRelStatus;
+      if (ruleBasedMood) ruleDoc.currentMood = ruleBasedMood;
+      await dynamicPersonaCollection.updateOne(
+        { username: username.toLowerCase() },
+        {
+          $set: ruleDoc,
+          $push: {
+            recentEvents: {
+              $each: [ruleBasedRelStatus || `Mood: ${ruleBasedMood}`],
+              $slice: -10
+            }
+          }
+        },
+        { upsert: true }
+      );
+      console.log(`📌 [Rule-Based Persona Updated for ${username}]:`, ruleDoc);
+    }
+
+    // ─── LLM EXTRACTOR (best-effort, multi-model fallback) ───────────────────────
+    const extractorModels = ['qwen/qwen3.8-27b', 'groq/compound-mini', 'openai/gpt-oss-20b'];
+    const nowTime = Date.now();
+    const usableKeys = cachedApiKeys.filter(k =>
+      k.status !== 'exhausted' || (k.exhaustedUntil && new Date(k.exhaustedUntil).getTime() < nowTime)
+    );
+    const keysToUse = usableKeys.length > 0 ? usableKeys : cachedApiKeys.length > 0 ? cachedApiKeys : DEFAULT_GROQ_KEYS;
 
     const extractorPrompt = `You are a Continuous Life Memory and Emotional State Gatekeeper for Aryan's best friend chat with ${username}.
 Analyze this message and extract ANY permanent life facts, personal relationship events, emotional states, food habits, medical routines, secrets, or ongoing struggles.
 Breakup, cheating, fighting, sadness, crying, happiness, new job, hospital duty, food eaten, etc. are HIGHEST priority!
 
-Respond ONLY in valid JSON:
-{
-  "hasFact": boolean,
-  "category": "relationship_status" | "emotional_state" | "clinical_duty" | "health_fatigue" | "food_preference" | "studies" | "personal_secrets" | "general",
-  "fact": string | null,
-  "keywords": string[] | null,
-  "importance": number (1 to 5) | null,
-  "relationshipStateUpdate": string | null,
-  "detectedMood": string | null
-}`;
+Respond ONLY in valid JSON (no code fences, no explanation):
+{"hasFact":boolean,"category":"relationship_status"|"emotional_state"|"clinical_duty"|"health_fatigue"|"food_preference"|"studies"|"personal_secrets"|"general","fact":string|null,"keywords":string[]|null,"importance":number,"relationshipStateUpdate":string|null,"detectedMood":string|null}`;
 
-    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0'
-      },
-      body: JSON.stringify({
-        model: 'qwen/qwen3.8-27b',
-        messages: [
-          { role: 'system', content: extractorPrompt },
-          { role: 'user', content: cleanMsg }
-        ],
-        temperature: 0.1,
-        max_tokens: 220
-      })
-    });
+    let parsed = null;
+    for (const modelName of extractorModels) {
+      if (parsed) break;
+      for (const keyDoc of keysToUse) {
+        try {
+          const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${keyDoc.key}`,
+              'Content-Type': 'application/json',
+              'User-Agent': 'Mozilla/5.0'
+            },
+            body: JSON.stringify({
+              model: modelName,
+              messages: [
+                { role: 'system', content: extractorPrompt },
+                { role: 'user', content: cleanMsg }
+              ],
+              temperature: 0.1,
+              max_tokens: 200,
+              reasoning_format: 'hidden'
+            })
+          });
 
-    if (groqRes.ok) {
-      const data = await groqRes.json();
-      const content = data.choices?.[0]?.message?.content?.trim();
-      const cleanJson = (content || '').replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(cleanJson);
-
-      if (parsed.hasFact && parsed.fact && memoriesCollection) {
-        await memoriesCollection.insertOne({
-          username: username.toLowerCase(),
-          fact: parsed.fact,
-          category: parsed.category || 'general',
-          keywords: parsed.keywords || [],
-          importance: parsed.importance || 3,
-          sourceMessage: cleanMsg,
-          createdAt: new Date()
-        });
-        console.log(`🧠 [Memory Extracted for ${username}]: ${parsed.fact}`);
-      }
-
-      if (dynamicPersonaCollection && (parsed.relationshipStateUpdate || parsed.detectedMood || (parsed.hasFact && parsed.category === 'relationship_status'))) {
-        const updateDoc = {
-          lastUpdated: new Date()
-        };
-        if (parsed.relationshipStateUpdate || (parsed.category === 'relationship_status' && parsed.fact)) {
-          updateDoc.relationshipStatus = parsed.relationshipStateUpdate || parsed.fact;
-        }
-        if (parsed.detectedMood) {
-          updateDoc.currentMood = parsed.detectedMood;
-        }
-        await dynamicPersonaCollection.updateOne(
-          { username: username.toLowerCase() },
-          {
-            $set: updateDoc,
-            $push: {
-              recentEvents: {
-                $each: [parsed.fact || parsed.relationshipStateUpdate || 'Event noted'],
-                $slice: -10
-              }
+          if (groqRes.ok) {
+            const data = await groqRes.json();
+            const content = data.choices?.[0]?.message?.content?.trim() || '';
+            // Strip any markdown code fences just in case
+            const cleanJson = content.replace(/```(?:json)?/g, '').trim();
+            // Extract first JSON object found
+            const jsonMatch = cleanJson.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              parsed = JSON.parse(jsonMatch[0]);
+              console.log(`🔬 [Extractor] ${modelName} parsed OK for ${username}`);
+              break;
             }
-          },
-          { upsert: true }
-        );
-        console.log(`🌱 [Dynamic Persona Updated for ${username}]:`, updateDoc);
+          } else if (groqRes.status === 429 && keyDoc._id) {
+            markKeyExhausted(keyDoc._id, 'extractor 429');
+          }
+        } catch (e) {
+          console.warn(`[Extractor ${modelName}]:`, e.message);
+        }
       }
+    }
+
+    if (!parsed) {
+      console.warn(`[Extractor] All models failed for ${username} — rule-based update already done`);
+      return;
+    }
+
+    if (parsed.hasFact && parsed.fact && memoriesCollection) {
+      await memoriesCollection.insertOne({
+        username: username.toLowerCase(),
+        fact: parsed.fact,
+        category: parsed.category || 'general',
+        keywords: parsed.keywords || [],
+        importance: parsed.importance || 3,
+        sourceMessage: cleanMsg,
+        createdAt: new Date()
+      });
+      console.log(`🧠 [Memory Extracted for ${username}]: ${parsed.fact}`);
+    }
+
+    if (dynamicPersonaCollection && (parsed.relationshipStateUpdate || parsed.detectedMood || (parsed.hasFact && parsed.category === 'relationship_status'))) {
+      const updateDoc = { lastUpdated: new Date() };
+      if (parsed.relationshipStateUpdate || (parsed.category === 'relationship_status' && parsed.fact)) {
+        updateDoc.relationshipStatus = parsed.relationshipStateUpdate || parsed.fact;
+      }
+      if (parsed.detectedMood) {
+        updateDoc.currentMood = parsed.detectedMood;
+      }
+      await dynamicPersonaCollection.updateOne(
+        { username: username.toLowerCase() },
+        {
+          $set: updateDoc,
+          $push: {
+            recentEvents: {
+              $each: [parsed.fact || parsed.relationshipStateUpdate || 'Event noted'],
+              $slice: -10
+            }
+          }
+        },
+        { upsert: true }
+      );
+      console.log(`🌱 [LLM Persona Updated for ${username}]:`, updateDoc);
     }
   } catch (err) {
     console.warn('Memory extraction error (non-fatal):', err.message);
   }
 }
+
+
 
 function sanitizeAryanReply(replyText, userMessage) {
   if (!replyText) return replyText;
