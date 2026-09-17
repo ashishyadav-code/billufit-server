@@ -19,6 +19,7 @@ let memoriesCollection = null;
 let notificationsCollection = null;
 let whatsappMessagesCollection = null;
 let whatsappPairsCollection = null;
+let apiKeysCollection = null;
 
 async function connectDB() {
   try {
@@ -31,7 +32,9 @@ async function connectDB() {
     notificationsCollection = db.collection('notifications');
     whatsappMessagesCollection = db.collection('whatsapp_messages');
     whatsappPairsCollection = db.collection('whatsapp_pairs');
-    console.log('⚡ [MongoDB Atlas] Connected successfully to billufit_db (users, meals, memory, memories, notifications, whatsapp_messages, whatsapp_pairs)');
+    apiKeysCollection = db.collection('groq_api_keys');
+    console.log('⚡ [MongoDB Atlas] Connected successfully to billufit_db (users, meals, memory, memories, notifications, whatsapp_messages, whatsapp_pairs, groq_api_keys)');
+    await initAndSeedApiKeys();
   } catch (err) {
     console.error('❌ [MongoDB Error] Failed to connect:', err.message);
   }
@@ -300,15 +303,95 @@ app.post('/api/user/:username/sync', async (req, res) => {
   }
 });
 
-// Aryan AI Best Friend Chat Endpoint
-const envKeys = (process.env.GROQ_API_KEYS || '').split(',').map(s => s.trim()).filter(Boolean);
-const fallbackKeys = [
-  ['gsk', '_SRdykwwOXqh6Jtircl9M', 'WGdyb3FY9eo6m3oYR53gSdY6ghpK3CN7'].join(''),
-  ['gsk', '_RwNlpxzbaSqDfKsAmPxc', 'WGdyb3FY4PKoamgaRBSRyTKpTRO7M7cA'].join('')
+// =====================================================================
+// DYNAMIC GROQ API KEY POOL & SMART EXHAUSTION SYSTEM
+// =====================================================================
+let cachedApiKeys = [];
+let activeKeyIdx = 0;
+
+const DEFAULT_GROQ_KEYS = [
+  {
+    key: ['gsk', '_SRdykwwOXqh6Jtircl9M', 'WGdyb3FY9eo6m3oYR53gSdY6ghpK3CN7'].join(''),
+    label: 'Groq Key #1 (Primary)',
+    status: 'active',
+    failCount: 0,
+    addedAt: new Date(),
+    lastUsedAt: null,
+    exhaustedUntil: null
+  },
+  {
+    key: ['gsk', '_RwNlpxzbaSqDfKsAmPxc', 'WGdyb3FY4PKoamgaRBSRyTKpTRO7M7cA'].join(''),
+    label: 'Groq Key #2 (Backup)',
+    status: 'active',
+    failCount: 0,
+    addedAt: new Date(),
+    lastUsedAt: null,
+    exhaustedUntil: null
+  }
 ];
-const GROQ_KEYS = Array.from(new Set([...envKeys, ...fallbackKeys]));
-console.log(`🔑 [Groq Engine] Active API Keys pool: ${GROQ_KEYS.length} keys loaded`);
-let keyIdx = 0;
+
+async function initAndSeedApiKeys() {
+  if (!apiKeysCollection) return;
+  try {
+    const count = await apiKeysCollection.countDocuments();
+    if (count === 0) {
+      await apiKeysCollection.insertMany(DEFAULT_GROQ_KEYS);
+      console.log('⚡ [Groq API Pool] Initialized default 2 API keys in MongoDB Atlas');
+    }
+    await refreshApiKeysCache();
+  } catch (err) {
+    console.error('❌ Error initializing API keys:', err.message);
+  }
+}
+
+async function refreshApiKeysCache() {
+  if (!apiKeysCollection) {
+    cachedApiKeys = DEFAULT_GROQ_KEYS;
+    return;
+  }
+  try {
+    const docs = await apiKeysCollection.find({}).sort({ addedAt: 1 }).toArray();
+    if (docs.length > 0) {
+      cachedApiKeys = docs;
+      const activeCount = cachedApiKeys.filter(k => k.status === 'active').length;
+      console.log(`🔑 [API Pool Synced] ${cachedApiKeys.length} total keys in database (${activeCount} active)`);
+    } else {
+      cachedApiKeys = DEFAULT_GROQ_KEYS;
+    }
+  } catch (err) {
+    console.warn('Could not refresh API keys cache:', err.message);
+    cachedApiKeys = DEFAULT_GROQ_KEYS;
+  }
+}
+
+// Mark key as exhausted in DB and cache (prevents next messages from retrying it!)
+async function markKeyExhausted(keyId, reason) {
+  if (!apiKeysCollection || !keyId) return;
+  try {
+    const exhaustedUntil = new Date(Date.now() + 18 * 3600 * 1000); // 18-hour cooldown
+    await apiKeysCollection.updateOne(
+      { _id: new ObjectId(keyId) },
+      {
+        $set: {
+          status: 'exhausted',
+          exhaustedUntil,
+          lastExhaustedReason: reason ? reason.substring(0, 150) : 'Rate limit exceeded',
+          lastUsedAt: new Date()
+        },
+        $inc: { failCount: 1 }
+      }
+    );
+    const found = cachedApiKeys.find(k => k._id && k._id.toString() === keyId.toString());
+    if (found) {
+      found.status = 'exhausted';
+      found.exhaustedUntil = exhaustedUntil;
+      found.failCount = (found.failCount || 0) + 1;
+    }
+    console.log(`⚠️ [API Key Exhausted] Key ${keyId} marked EXHAUSTED until ${exhaustedUntil.toISOString()}`);
+  } catch (err) {
+    console.warn('Failed to mark key exhausted:', err.message);
+  }
+}
 
 // Hybrid Semantic Memory Scoring Function
 function computeHybridScore(query, mem) {
@@ -636,15 +719,37 @@ ${memoryBlock}`;
     let reply = defaultFallback;
 
     let chosenModel = 'qwen/qwen3.8-27b';
+    let chosenKeyLabel = 'Default';
     const candidateModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
     let succeeded = false;
     let lastGroqError = null;
     const tInferenceStart = Date.now();
 
+    // Smart Key Selection: filter out any keys marked exhausted unless cooldown expired
+    const nowTime = Date.now();
+    let usableKeyDocs = cachedApiKeys.filter(k => {
+      if (k.status !== 'exhausted') return true;
+      if (k.exhaustedUntil && new Date(k.exhaustedUntil).getTime() < nowTime) {
+        k.status = 'active'; // Auto-revive after cooldown
+        return true;
+      }
+      return false;
+    });
+
+    if (usableKeyDocs.length === 0 && cachedApiKeys.length > 0) {
+      // Emergency fallback: if all keys were exhausted, attempt with all keys
+      usableKeyDocs = cachedApiKeys;
+    }
+
+    if (usableKeyDocs.length === 0) {
+      usableKeyDocs = DEFAULT_GROQ_KEYS;
+    }
+
     for (const modelName of candidateModels) {
       if (succeeded) break;
-      for (let i = 0; i < GROQ_KEYS.length; i++) {
-        const apiKey = GROQ_KEYS[(keyIdx + i) % GROQ_KEYS.length];
+      for (let i = 0; i < usableKeyDocs.length; i++) {
+        const keyDoc = usableKeyDocs[(activeKeyIdx + i) % usableKeyDocs.length];
+        const apiKey = keyDoc.key;
         try {
           const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -669,18 +774,25 @@ ${memoryBlock}`;
             if (candidateContent && candidateContent.length >= 4) {
               reply = candidateContent;
               chosenModel = modelName;
+              chosenKeyLabel = keyDoc.label || `Key #${(activeKeyIdx + i) % usableKeyDocs.length + 1}`;
               succeeded = true;
-              keyIdx = (keyIdx + i + 1) % GROQ_KEYS.length;
+              activeKeyIdx = (activeKeyIdx + i) % usableKeyDocs.length;
               break;
             }
           } else {
             const errText = await groqRes.text();
-            lastGroqError = `${modelName} key${i} (${groqRes.status}): ${errText.substring(0, 100)}`;
-            console.warn(`[Groq ${modelName} key ${i} status ${groqRes.status}]:`, errText.substring(0, 100));
+            lastGroqError = `${modelName} [${keyDoc.label || 'Key'}] status ${groqRes.status}: ${errText.substring(0, 100)}`;
+            console.warn(`[Groq ${modelName} ${keyDoc.label || 'Key'} status ${groqRes.status}]:`, errText.substring(0, 100));
+
+            // CRITICAL SMART RULE: If 429 rate limit hit, mark key EXHAUSTED in DB!
+            // Subsequent messages will NOT try this dead key!
+            if (groqRes.status === 429 && keyDoc._id) {
+              markKeyExhausted(keyDoc._id, errText);
+            }
           }
         } catch (e) {
-          lastGroqError = `${modelName} key${i} exc: ${e.message}`;
-          console.warn(`[Groq fetch exception for ${modelName} key ${i}]:`, e.message);
+          lastGroqError = `${modelName} [${keyDoc.label || 'Key'}] exc: ${e.message}`;
+          console.warn(`[Groq fetch exception for ${modelName} ${keyDoc.label || 'Key'}]:`, e.message);
         }
       }
     }
@@ -725,17 +837,19 @@ ${memoryBlock}`;
 
     const telemetry = {
       model: succeeded ? chosenModel : 'Fallback',
+      keyUsed: succeeded ? chosenKeyLabel : 'None',
       succeeded,
       totalMs,
       dbRecallMs,
       inferenceMs,
-      keysCount: GROQ_KEYS.length,
+      keysTotal: cachedApiKeys.length,
+      keysActive: usableKeyDocs.length,
       lastError: succeeded ? null : lastGroqError,
       steps: [
         { id: 1, name: "1. Intent & Input Tokenizer", status: "Done", durationMs: Math.max(1, tDbStart - t0) },
         { id: 2, name: "2. MongoDB Atlas Memory Recall", status: "Done", durationMs: Math.max(10, Math.floor(dbRecallMs * 0.4)), details: `${matchedMemories.length} facts matched` },
         { id: 3, name: "3. Real WhatsApp Style Retrieval", status: "Done", durationMs: Math.max(10, Math.floor(dbRecallMs * 0.6)), details: `${matchedRealExchanges.length} pairs retrieved` },
-        { id: 4, name: "4. Groq LPU Neural Inference", status: "Done", durationMs: inferenceMs, details: chosenModel },
+        { id: 4, name: "4. Groq LPU Neural Inference", status: "Done", durationMs: inferenceMs, details: `${chosenModel} (${chosenKeyLabel})` },
         { id: 5, name: "5. Anti-Loop & Continuity Guard", status: "Done", durationMs: Math.max(1, totalMs - (tInferenceEnd - t0)), details: "Passed" }
       ]
     };
@@ -1145,6 +1259,156 @@ app.post('/api/notifications/:id/read', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// =====================================================================
+// DYNAMIC GROQ API KEY MANAGEMENT ENDPOINTS (FOR BILLUMANAGER)
+// =====================================================================
+
+// GET /api/admin/keys - List all keys (with masked strings and status)
+app.get('/api/admin/keys', async (req, res) => {
+  try {
+    if (!apiKeysCollection) {
+      return res.status(503).json({ success: false, error: 'Database initializing' });
+    }
+    await refreshApiKeysCache();
+    const nowTime = Date.now();
+    const keys = cachedApiKeys.map((k, index) => {
+      const raw = k.key || '';
+      const masked = raw.length > 12 
+        ? `${raw.substring(0, 8)}...${raw.substring(raw.length - 4)}` 
+        : '••••••••';
+      
+      let isExhausted = k.status === 'exhausted';
+      if (isExhausted && k.exhaustedUntil && new Date(k.exhaustedUntil).getTime() < nowTime) {
+        isExhausted = false; // Cooldown expired, auto-revived
+      }
+
+      return {
+        _id: k._id,
+        index: index + 1,
+        maskedKey: masked,
+        label: k.label || `Groq Key #${index + 1}`,
+        status: isExhausted ? 'exhausted' : 'active',
+        failCount: k.failCount || 0,
+        addedAt: k.addedAt || null,
+        lastUsedAt: k.lastUsedAt || null,
+        exhaustedUntil: k.exhaustedUntil || null,
+        lastExhaustedReason: k.lastExhaustedReason || null
+      };
+    });
+
+    res.json({
+      success: true,
+      totalCount: keys.length,
+      activeCount: keys.filter(k => k.status === 'active').length,
+      exhaustedCount: keys.filter(k => k.status === 'exhausted').length,
+      keys
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/admin/keys - Add new Groq Key
+app.post('/api/admin/keys', async (req, res) => {
+  try {
+    if (!apiKeysCollection) {
+      return res.status(503).json({ success: false, error: 'Database initializing' });
+    }
+    const { key, label } = req.body;
+    if (!key || typeof key !== 'string') {
+      return res.status(400).json({ success: false, error: 'Groq API Key is required' });
+    }
+    const cleanKey = key.trim();
+    if (!cleanKey.startsWith('gsk_')) {
+      return res.status(400).json({ success: false, error: 'Invalid Groq API Key! Must start with gsk_' });
+    }
+    if (cleanKey.length < 25) {
+      return res.status(400).json({ success: false, error: 'Groq API Key appears too short' });
+    }
+
+    const existing = await apiKeysCollection.findOne({ key: cleanKey });
+    if (existing) {
+      return res.status(409).json({ success: false, error: 'This API key is already in the database pool!' });
+    }
+
+    const newDoc = {
+      key: cleanKey,
+      label: (label || '').trim() || `Groq Key #${cachedApiKeys.length + 1}`,
+      status: 'active',
+      failCount: 0,
+      addedAt: new Date(),
+      lastUsedAt: null,
+      exhaustedUntil: null
+    };
+
+    const insertResult = await apiKeysCollection.insertOne(newDoc);
+    await refreshApiKeysCache();
+
+    res.json({
+      success: true,
+      message: 'New Groq API Key added successfully to cloud pool!',
+      keyId: insertResult.insertedId,
+      totalKeys: cachedApiKeys.length
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /api/admin/keys/:id - Delete a key
+app.delete('/api/admin/keys/:id', async (req, res) => {
+  try {
+    if (!apiKeysCollection) {
+      return res.status(503).json({ success: false, error: 'Database initializing' });
+    }
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid key ID' });
+    }
+
+    const delResult = await apiKeysCollection.deleteOne({ _id: new ObjectId(id) });
+    if (delResult.deletedCount === 0) {
+      return res.status(404).json({ success: false, error: 'Key not found' });
+    }
+
+    await refreshApiKeysCache();
+    res.json({
+      success: true,
+      message: 'API key deleted successfully from pool',
+      totalKeys: cachedApiKeys.length
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/admin/keys/reset - Reset all exhausted keys back to active
+app.post('/api/admin/keys/reset', async (req, res) => {
+  try {
+    if (!apiKeysCollection) {
+      return res.status(503).json({ success: false, error: 'Database initializing' });
+    }
+    await apiKeysCollection.updateMany(
+      {},
+      {
+        $set: {
+          status: 'active',
+          exhaustedUntil: null,
+          lastExhaustedReason: null
+        }
+      }
+    );
+    await refreshApiKeysCache();
+    res.json({
+      success: true,
+      message: 'All API keys reset to active status!',
+      activeCount: cachedApiKeys.length
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
