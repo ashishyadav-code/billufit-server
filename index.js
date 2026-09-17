@@ -439,31 +439,42 @@ app.post('/api/chat/aryan', async (req, res) => {
       matchedMemories = uniqueFacts;
     }
 
-    // Step 2: Query Real WhatsApp Exchanges for Exact Tone & Dialogue Copying
+    // Step 2: Intelligent Topical Querying of Real WhatsApp Exchanges (Style Reference Only)
     let matchedRealExchanges = [];
     if (isSoniya && whatsappPairsCollection) {
       try {
-        const cleanQuery = message.replace(/[^\w\s]/g, ' ').trim();
-        if (cleanQuery.length >= 3) {
+        const cleanWords = message.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 1);
+        const genericWords = new Set([
+          'ha', 'haan', 'na', 'kya', 'me', 'tu', 'hu', 'hai', 'h', 'to', 'toh', 'bata', 'achha', 'acha',
+          'thik', 'theek', 'are', 'aree', 'kese', 'kaise', 'kyu', 'kyun', 'janti', 'jaanti', 'bol', 'nhi',
+          'hloo', 'hello', 'hey', 'hi', 'kuch', 'bhi', 'tera', 'teri', 'meri', 'mera', 'apna', 'apni',
+          'aaj', 'kal', 'parso', 'fir', 'phir', 'baat', 'bolna', 'suno', 'sun', 'pgl', 'pagal', 'chutiya',
+          'lavde', 'gussa', 'dimag', 'bhabhi', 'bhai', 'yaar', 'yrr'
+        ]);
+        const topicalWords = cleanWords.filter(w => !genericWords.has(w) && w.length >= 3);
+
+        // Only search historical pairs if the user is asking about a specific topical theme
+        if (topicalWords.length > 0) {
+          const searchQuery = topicalWords.join(' ');
           const pairs = await whatsappPairsCollection.find(
-            { $text: { $search: cleanQuery } },
+            { $text: { $search: searchQuery } },
             { score: { $meta: 'textScore' } }
           ).sort({ score: { $meta: 'textScore' } }).limit(2).toArray();
 
           matchedRealExchanges = pairs.map(p => ({
             date: p.date,
-            soniya: p.soniyaText,
-            aryan: p.aryanReply
+            soniya: (p.soniyaText || '').substring(0, 100),
+            aryan: (p.aryanReply || '').substring(0, 150)
           }));
         }
       } catch (err) {
-        // Fallback silently if text search has syntax issues
+        console.warn('WhatsApp pairs search notice:', err.message);
       }
     }
 
     const realExchangesBlock = matchedRealExchanges.length > 0
-      ? `\nHISTORICAL REAL EXCHANGES FROM YOUR ACTUAL WHATSAPP CHATS (Copy this exact wording and tone):\n` +
-        matchedRealExchanges.map(e => `[Date: ${e.date}]\nSoniya said: "${e.soniya}"\nAryan replied: "${e.aryan}"`).join('\n\n') + '\n'
+      ? `\nFEW-SHOT TONE REFERENCE EXAMPLES (Learn Aryan's texting style from these past samples, but NEVER blindly copy-paste them. Formulate fresh, dynamic replies for the current conversation):\n` +
+        matchedRealExchanges.map(e => `[Sample]\nSoniya: "${e.soniya}"\nAryan: "${e.aryan}"`).join('\n\n') + '\n'
       : '';
 
     // Step 3: Build Memory Context
@@ -522,21 +533,21 @@ SONIYA'S COMPREHENSIVE DOSSIER (EXTRACTED FROM 28,000+ REAL MESSAGES):
 
     const soniyaPrompt = `You are Aryan Yadav. You are Soniya's real-life best friend. You two talk on WhatsApp.
 ${soniyaMasterDossier}
-CRITICAL SITUATIONAL & EMOTIONAL INTELLIGENCE (TONE MATCHING):
-1. 💡 INFORMATIONAL / JANKARI QUERIES (HAR JAGAH ROAST NAHI!):
-   - When she asks something serious, informational, or asks for knowledge/advice (e.g. medical doubts, digestion, supplements, medicines, liver, studies, practical tips, life advice):
-   - DO NOT ROAST OR JOKE. Give genuine, accurate, mature, and helpful info like real Aryan does! (e.g. explain LFT, Tudka, protein timing, rest, etc. clearly and warmly).
-2. 🛋️ TIRED / PAINED / SICK TONE:
-   - If she has a headache, is exhausted after OT, or unwell: Be protective, gentle, and caring ("Aree dhyan rakho apna... pani piyo or thoda aaram kro", "Sumocold le le").
-3. 😂 PLAYFUL / DRAMA TONE:
-   - Only roast and joke when she is in a fun, teasing, drama mood ("Tu regmaal use krr 🤣", "Tu pgl h kyaa").
-4. 😤 ANGRY / MOODY TONE:
-   - If irritated or says "tu chutiya he kya", "gussa hu": React playfully: "Aree gussa kyu ho rhi h baba 🤣 jaa dhyan se", "Pgl h kyaa... gussa mt ho".
-5. 🚶 GOING OUT / BUSY:
-   - "Achha jaa dhyan se jaana... kab tak khatam hogi?" (NEVER "aaram kro" when she is leaving).
-6. 🚫 ZERO WORKOUT NAGGING: Never say workout/gym unless she asks.
-7. 🔄 ANTI-REPETITION: Never repeat questions back-to-back.
-8. ✍️ TEXTING CADENCE: Very short (5 to 14 words max). Hinglish: 'krr', 'kyaa', 'okh', 'bo', 'yrr', 'pgl', 'hloo', 'nhi'. Emojis: 🤣, 🙂, 🤧, 😫, 😬, 😶, 😐, 🤡, 🫠, 🫣.
+CRITICAL CONVERSATIONAL CONTINUITY & DYNAMIC THINKING:
+1. 🧠 THINK DYNAMICALLY & MAINTAIN CONVERSATION FLOW:
+   - Always evaluate the active conversation history!
+   - Reply directly to what Soniya JUST said. If she questions or challenges your previous answer (e.g. asking who someone is, or saying she doesn't know them), respond directly to her specific reaction with natural teasing or clarification!
+   - DO NOT paste canned lines. Think what Aryan would say in response to her latest emotion or question.
+2. 🚫 ABSOLUTELY NEVER RESET GREETINGS MID-CHAT:
+   - If a conversation is already running, NEVER suddenly say "Hloo... kya krr rhi aaj? Duty se aa gayi kya?" or "Khana kha liya kya?".
+   - Stay locked into the ongoing subject until Soniya changes it.
+3. 💡 SITUATIONAL TONE:
+   - Serious / Medical / Knowledge questions: Mature, accurate, warm info (NO ROASTING).
+   - Tired / Pain / Sick: Protective, gentle ("Aree dhyan rakho apna... aaram kro").
+   - Playful / Teasing / Drama: Tease her back with signature Aryan humor ("Pgl h kyaa", "Regmaal use krr 🤣").
+   - Irritated / Slang: Laugh playfully ("Aree gussa kyu ho rhi h baba 🤣").
+4. ✍️ TEXTING CADENCE:
+   - Very brief (1-2 lines, 6 to 18 words max). Authentic Hinglish: 'krr', 'kyaa', 'okh', 'bo', 'yrr', 'pgl', 'hloo', 'nhi', 'baba'. Emojis: 🤣, 🙂, 🤧, 😫, 😬, 😶, 😐, 🤡, 🫠.
 ${realExchangesBlock}
 ${memoryBlock}`;
 
@@ -551,37 +562,82 @@ ${memoryBlock}`;
 
     const systemPrompt = isSoniya ? soniyaPrompt : regularUserPrompt;
 
-    const messages = [{ role: 'system', content: systemPrompt }];
-    history.slice(-8).forEach(h => {
-      messages.push({ role: h.sender === 'user' ? 'user' : 'assistant', content: h.text });
-    });
-    messages.push({ role: 'user', content: message });
+    // Step 3: Build multi-turn messages array with deduplication
+    const cleanHistory = [];
+    if (Array.isArray(history)) {
+      const recentHistory = history.slice(-20);
+      for (const h of recentHistory) {
+        const text = (h.text || '').trim();
+        if (!text) continue;
+        const role = (h.sender === 'user' || h.role === 'user') ? 'user' : 'assistant';
+        if (cleanHistory.length > 0 && cleanHistory[cleanHistory.length - 1].content === text) {
+          continue;
+        }
+        cleanHistory.push({ role, content: text });
+      }
+    }
 
-    let reply = "Hloo... kya krr rhi aaj? Duty se aa gayi?";
-    for (let i = 0; i < GROQ_KEYS.length; i++) {
+    // Ensure the current user message is cleanly appended without duplicating
+    const lastHist = cleanHistory.length > 0 ? cleanHistory[cleanHistory.length - 1] : null;
+    if (!lastHist || lastHist.role !== 'user' || lastHist.content !== message.trim()) {
+      cleanHistory.push({ role: 'user', content: message.trim() });
+    }
+
+    const messages = [{ role: 'system', content: systemPrompt }, ...cleanHistory];
+
+    // Context-aware fallback (NEVER reset to greeting if conversation is active!)
+    let defaultFallback = "Hloo... kya krr rhi aaj? Duty se aa gayi?";
+    if (cleanHistory.length > 2) {
+      const activeFallbacks = [
+        "Arre ek second net thoda atak gaya tha, wapas bolna kya bol rhi thi?",
+        "Achha sun... tu bata fir kya hua?",
+        "Pgl h kya 🤣 wapas bolna ek baar network issue aa gaya tha"
+      ];
+      defaultFallback = activeFallbacks[Math.floor(Math.random() * activeFallbacks.length)];
+    }
+    let reply = defaultFallback;
+
+    // Call Groq with key rotation and model fallback
+    const candidateModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+    let succeeded = false;
+
+    for (let i = 0; i < GROQ_KEYS.length && !succeeded; i++) {
       const apiKey = GROQ_KEYS[keyIdx];
       keyIdx = (keyIdx + 1) % GROQ_KEYS.length;
-      try {
-        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0'
-          },
-          body: JSON.stringify({
-            model: 'qwen/qwen3.8-27b',
-            messages,
-            temperature: 0.6,
-            max_tokens: 200
-          })
-        });
-        if (groqRes.ok) {
-          const data = await groqRes.json();
-          reply = data.choices?.[0]?.message?.content?.trim() || reply;
-          break;
+
+      for (const modelName of candidateModels) {
+        try {
+          const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json',
+              'User-Agent': 'Mozilla/5.0'
+            },
+            body: JSON.stringify({
+              model: modelName,
+              messages,
+              temperature: 0.65,
+              max_tokens: 150
+            })
+          });
+
+          if (groqRes.ok) {
+            const data = await groqRes.json();
+            const candidateContent = data.choices?.[0]?.message?.content?.trim();
+            if (candidateContent) {
+              reply = candidateContent;
+              succeeded = true;
+              break;
+            }
+          } else {
+            const errText = await groqRes.text();
+            console.warn(`[Groq ${modelName} error ${groqRes.status}]:`, errText.substring(0, 100));
+          }
+        } catch (e) {
+          console.warn(`[Groq fetch exception for ${modelName}]:`, e.message);
         }
-      } catch (e) {}
+      }
     }
 
     // Return reply immediately to user (instant 0.3s response)
