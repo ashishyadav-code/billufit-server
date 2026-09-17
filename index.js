@@ -710,7 +710,7 @@ function sanitizeAryanReply(replyText, userMessage) {
       return "Pgl h kya dimaag kharab hai tera? Main Aryan hu saale, mujhe hi bot bana rhi hai tu 🤣";
     }
 
-    return "Aree sun na baba, kya baat hai dhang se bol na... main yahin hu sun rha hu.";
+    return "Sun, main tere se kal baat karta hu... mujhe ek urgent kaam aa gaya hai, kal batata hu.";
   }
 
   // Never address Soniya as 'Bhai'
@@ -1018,15 +1018,8 @@ ${memoryBlock}`;
         "Aye pgl ruk! Main yahan hu, poori baat bata. Tu akeli nahi hai kabhi bhi main hamesha hun.",
       ];
       defaultFallback = distressFallbacks[Math.floor(Math.random() * distressFallbacks.length)];
-    } else if (cleanHistory.length > 2) {
-      const activeFallbacks = [
-        "Arre ek second net thoda atak gaya tha, wapas bolna kya bol rhi thi?",
-        "Achha sun... tu bata fir kya hua?",
-        "Pgl h kya wapas bolna ek baar network issue aa gaya tha"
-      ];
-      defaultFallback = activeFallbacks[Math.floor(Math.random() * activeFallbacks.length)];
     } else {
-      defaultFallback = "Achha sun, ek second net thoda atak gaya tha... wapas bolna kya bol rhi thi?";
+      defaultFallback = "Sun, main tere se kal baat karta hu... mujhe ek urgent kaam aa gaya hai, kal batata hu.";
     }
     let reply = defaultFallback;
 
@@ -1034,9 +1027,9 @@ ${memoryBlock}`;
     let chosenKeyLabel = 'Default';
     const candidateModels = [
       'qwen/qwen3.8-27b',
+      'openai/gpt-oss-120b',
       'groq/compound-mini',
       'groq/compound',
-      'openai/gpt-oss-120b',
       'openai/gpt-oss-20b'
     ];
     let succeeded = false;
