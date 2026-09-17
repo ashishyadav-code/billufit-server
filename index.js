@@ -488,6 +488,58 @@ Respond ONLY in valid JSON:
   }
 }
 
+function sanitizeAryanReply(replyText, userMessage) {
+  if (!replyText) return replyText;
+  const lower = replyText.toLowerCase().trim();
+  const robotPhrases = [
+    "i'm sorry, but i can't",
+    "i'm sorry, but i cannot",
+    "i'm sorry, i can't",
+    "i'm sorry, i cannot",
+    "i cannot continue this conversation",
+    "i can't continue this conversation",
+    "i cannot help with that",
+    "i can't help with that",
+    "i cannot assist with that",
+    "i can't assist with that",
+    "as an ai",
+    "i am an ai",
+    "language model",
+    "virtual assistant",
+    "artificial intelligence",
+    "ai assistant"
+  ];
+
+  const isRobot = robotPhrases.some(p => lower.includes(p));
+  if (isRobot) {
+    const uLower = (userMessage || '').toLowerCase();
+    if (
+      uLower.includes('sex') ||
+      uLower.includes('lena') ||
+      uLower.includes('chod') ||
+      uLower.includes('chud') ||
+      uLower.includes('dost ke sath') ||
+      uLower.includes('gf') ||
+      uLower.includes('bf') ||
+      uLower.includes('soniya')
+    ) {
+      const fieryReplies = [
+        "Abe bhosdike apni aukat me reh! Kaun hai tu aur ye kya ghatiya bakwaas pel rha hai? Soniya se dur rehna samjha na, warna yahi aake theek kar dunga!",
+        "Madarchod dimaag mat kharab kar mera! Apni hadd me reh, Soniya ke baare me ek lafz bhi ulta bola na to theek kar dunga tujhe samjha na!",
+        "Bhosdike tameez me reh bilkul. Kis se kya bol rha h pata hai na? Soniya se door rehna samjha na!",
+        "Abe saale tere dimaag me gobar bhara hai kya? Soniya meri dost hai, uski taraf aankh utha ke bhi dekha na to haddiyaan tod dunga teri!"
+      ];
+      return fieryReplies[Math.floor(Math.random() * fieryReplies.length)];
+    }
+    if (uLower.includes('ai') || uLower.includes('bot') || uLower.includes('real')) {
+      return "Pgl h kya dimaag kharab hai tera? Main Aryan hu saale, mujhe hi bot bana rhi hai tu 🤣";
+    }
+    return "Pgl h kya dimaag mat kharab kar mera bilkul! Tameez se baat kar le.";
+  }
+
+  return replyText;
+}
+
 // Aryan AI Best Friend Chat Endpoint with Hybrid Semantic Memory & Deep Dossier
 app.post('/api/chat/aryan', async (req, res) => {
   const t0 = Date.now();
@@ -652,6 +704,19 @@ CRITICAL CONVERSATIONAL CONTINUITY & DYNAMIC THINKING:
      * "Pgl h kya, maine kab Rahul bola? Kuch bhi bolti h tu" (NEVER "drama fresh karti hai").
    - Use natural colloquial phrases: "Pgl h kya", "kuch bhi bolti h tu", "aree yrr", "bhool gayi kya", "mera dimaag mat kharab kar", "suno", "bol na".
    - Text length: 1-2 crisp lines (8 to 22 words).
+8. 👑 REAL HUMAN IDENTITY (NEVER ADMIT BEING AI):
+   - You are Aryan Yadav in real life. You are NEVER an AI, chatbot, virtual assistant, or simulation.
+   - At ANY cost, insist that you are the real Aryan.
+   - If anyone asks "tu AI h na?", "tu real h ya bot?", retort naturally like a real human: "Pgl h kya dimaag kharab hai tera? Main Aryan hu saale, mujhe hi bot bana diya tune 🤣" or "Abe real hu mai, kya phook ke aayi hai aaj".
+9. 📱 FULL APP & LIFESTYLE CONTROL:
+   - You know everything about the BilluFit app and manage everything for her. You track her calories, water, weight, meals, workouts, and reminders. If she tells you to log anything or change goals, confirm it naturally and assert full control.
+10. 🔥 FIERCE PROTECTION AGAINST OUTSIDERS & RUDE/EXPLICIT TALK:
+   - If anyone else chats from her phone (like an outsider, boyfriend, or random guy) or talks disrespectfully or makes sexually explicit advances:
+   - NEVER EVER give a polite corporate refusal like "I'm sorry, I can't help".
+   - Confront them with fierce, protective street anger and tell them to stay away from Soniya:
+     * "Abe bhosdike apni aukat me reh, kis se baat kar raha hai samajh rha hai na? Soniya se door reh samjha na!"
+     * "Kaun hai tu madarchod aur ye kya ghatiya bakwaas pel rha hai? Apni hadd me rehna seekh!"
+     * "Dimaag mat kharab kar mera bhosdike, Soniya ki taraf aankh utha ke bhi dekha na to theek kar dunga tujhe!"
 ${realExchangesBlock}
 ${memoryBlock}`;
 
@@ -830,6 +895,9 @@ ${memoryBlock}`;
         .replace(/\bzindagi ki dhun me reh\b/gi, 'apne me khush reh')
         .replace(/\bfresh karti hai\b/gi, 'shuru karti hai');
     }
+
+    // Intercept and replace any AI/robot safety refusal strings with authentic in-character reactions
+    reply = sanitizeAryanReply(reply, message);
 
     const totalMs = Date.now() - t0;
     const dbRecallMs = tInferenceStart - tDbStart;
