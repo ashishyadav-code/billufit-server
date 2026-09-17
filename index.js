@@ -623,12 +623,12 @@ ${memoryBlock}`;
     const messages = [{ role: 'system', content: systemPrompt }, ...cleanHistory];
 
     // Context-aware fallback (NEVER reset to greeting if conversation is active!)
-    let defaultFallback = "Hloo... kya krr rhi aaj? Duty se aa gayi?";
+    let defaultFallback = "Achha sun, ek second net thoda atak gaya tha... wapas bolna kya bol rhi thi?";
     if (cleanHistory.length > 2) {
       const activeFallbacks = [
         "Arre ek second net thoda atak gaya tha, wapas bolna kya bol rhi thi?",
         "Achha sun... tu bata fir kya hua?",
-        "Pgl h kya 🤣 wapas bolna ek baar network issue aa gaya tha"
+        "Pgl h kya wapas bolna ek baar network issue aa gaya tha"
       ];
       defaultFallback = activeFallbacks[Math.floor(Math.random() * activeFallbacks.length)];
     }
@@ -639,11 +639,10 @@ ${memoryBlock}`;
     let succeeded = false;
     const tInferenceStart = Date.now();
 
-    for (let i = 0; i < GROQ_KEYS.length && !succeeded; i++) {
-      const apiKey = GROQ_KEYS[keyIdx];
-      keyIdx = (keyIdx + 1) % GROQ_KEYS.length;
-
-      for (const modelName of candidateModels) {
+    for (const modelName of candidateModels) {
+      if (succeeded) break;
+      for (let i = 0; i < GROQ_KEYS.length; i++) {
+        const apiKey = GROQ_KEYS[(keyIdx + i) % GROQ_KEYS.length];
         try {
           const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -655,9 +654,9 @@ ${memoryBlock}`;
             body: JSON.stringify({
               model: modelName,
               messages,
-              temperature: 0.7,
+              temperature: 0.65,
               presence_penalty: 0.3,
-              max_tokens: 150
+              max_tokens: 200
             })
           });
 
@@ -668,14 +667,15 @@ ${memoryBlock}`;
               reply = candidateContent;
               chosenModel = modelName;
               succeeded = true;
+              keyIdx = (keyIdx + i + 1) % GROQ_KEYS.length;
               break;
             }
           } else {
             const errText = await groqRes.text();
-            console.warn(`[Groq ${modelName} error ${groqRes.status}]:`, errText.substring(0, 100));
+            console.warn(`[Groq ${modelName} key ${i} status ${groqRes.status}]:`, errText.substring(0, 100));
           }
         } catch (e) {
-          console.warn(`[Groq fetch exception for ${modelName}]:`, e.message);
+          console.warn(`[Groq fetch exception for ${modelName} key ${i}]:`, e.message);
         }
       }
     }
