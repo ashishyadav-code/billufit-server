@@ -499,8 +499,9 @@ async function extractFactAndKeywordsAsync(username, message) {
       console.log(`📌 [Rule-Based Persona Updated for ${username}]:`, ruleDoc);
     }
 
-    // ─── LLM EXTRACTOR (best-effort, multi-model fallback) ───────────────────────
-    const extractorModels = ['qwen/qwen3.8-27b', 'groq/compound-mini', 'openai/gpt-oss-20b'];
+    // ─── LLM EXTRACTOR (best-effort background extraction) ──────────────────────
+    // Reserve qwen/qwen3.8-27b exclusively for primary chat; use compound-mini & 20b for background JSON parsing
+    const extractorModels = ['groq/compound-mini', 'openai/gpt-oss-20b'];
     const nowTime = Date.now();
     const usableKeys = cachedApiKeys.filter(k =>
       k.status !== 'exhausted' || (k.exhaustedUntil && new Date(k.exhaustedUntil).getTime() < nowTime)
@@ -508,10 +509,15 @@ async function extractFactAndKeywordsAsync(username, message) {
     const keysToUse = usableKeys.length > 0 ? usableKeys : cachedApiKeys.length > 0 ? cachedApiKeys : DEFAULT_GROQ_KEYS;
 
     const extractorPrompt = `You are a Continuous Life Memory and Emotional State Gatekeeper for Aryan's best friend chat with ${username}.
-Analyze this message and extract ANY permanent life facts, personal relationship events, emotional states, food habits, medical routines, secrets, or ongoing struggles.
-Breakup, cheating, fighting, sadness, crying, happiness, new job, hospital duty, food eaten, etc. are HIGHEST priority!
+The message was sent by ${username} to Aryan: "${cleanMsg}"
 
-Respond ONLY in valid JSON (no code fences, no explanation):
+CRITICAL EXTRACTION RULES:
+1. Speaker is ${username}, NOT Aryan. Any extracted fact MUST state "${username} ...", NEVER "Aryan ...".
+2. ONLY extract enduring, permanent personal facts (e.g. clinical duty timings, medical routines, food preferences, family details, breakups, cheating, confessions).
+3. DO NOT extract transient daily feelings, casual small talk, or everyday remarks like "ajeeb lag rha he", "bore ho rhi hu", "good morning", "kya chal rha h" as permanent memories! For casual or transient messages, return {"hasFact": false, "fact": null, "detectedMood": null}.
+4. If she mentions cheating/breakup/crying, set relationshipStateUpdate or detectedMood accordingly. If she is chatting normally, detectedMood can be "normal".
+
+Respond ONLY in valid JSON (no markdown, no code fences):
 {"hasFact":boolean,"category":"relationship_status"|"emotional_state"|"clinical_duty"|"health_fatigue"|"food_preference"|"studies"|"personal_secrets"|"general","fact":string|null,"keywords":string[]|null,"importance":number,"relationshipStateUpdate":string|null,"detectedMood":string|null}`;
 
     let parsed = null;
@@ -533,24 +539,20 @@ Respond ONLY in valid JSON (no code fences, no explanation):
                 { role: 'user', content: cleanMsg }
               ],
               temperature: 0.1,
-              max_tokens: 300
+              max_tokens: 250
             })
           });
 
           if (groqRes.ok) {
             const data = await groqRes.json();
             const content = data.choices?.[0]?.message?.content?.trim() || '';
-            // Strip any markdown code fences just in case
             const cleanJson = content.replace(/```(?:json)?/g, '').trim();
-            // Extract first JSON object found
             const jsonMatch = cleanJson.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
               parsed = JSON.parse(jsonMatch[0]);
               console.log(`🔬 [Extractor] ${modelName} parsed OK for ${username}`);
               break;
             }
-          } else if (groqRes.status === 429 && keyDoc._id) {
-            markKeyExhausted(keyDoc._id, 'extractor 429', modelName);
           }
         } catch (e) {
           console.warn(`[Extractor ${modelName}]:`, e.message);
@@ -559,7 +561,6 @@ Respond ONLY in valid JSON (no code fences, no explanation):
     }
 
     if (!parsed) {
-      console.warn(`[Extractor] All models failed for ${username} — rule-based update already done`);
       return;
     }
 
@@ -584,17 +585,19 @@ Respond ONLY in valid JSON (no code fences, no explanation):
       if (parsed.detectedMood) {
         updateDoc.currentMood = parsed.detectedMood;
       }
+      const pushEvent = parsed.fact || parsed.relationshipStateUpdate;
+      const updateOp = { $set: updateDoc };
+      if (pushEvent && pushEvent !== 'Event noted') {
+        updateOp.$push = {
+          recentEvents: {
+            $each: [pushEvent],
+            $slice: -10
+          }
+        };
+      }
       await dynamicPersonaCollection.updateOne(
         { username: username.toLowerCase() },
-        {
-          $set: updateDoc,
-          $push: {
-            recentEvents: {
-              $each: [parsed.fact || parsed.relationshipStateUpdate || 'Event noted'],
-              $slice: -10
-            }
-          }
-        },
+        updateOp,
         { upsert: true }
       );
       console.log(`🌱 [LLM Persona Updated for ${username}]:`, updateDoc);
