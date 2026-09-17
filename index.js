@@ -367,24 +367,19 @@ async function refreshApiKeysCache() {
 }
 
 // Mark key as exhausted for a specific model (per-model, not global!)
-// e.g. qwen 429 does NOT block compound-mini on same key
+// Mark key as exhausted for a specific model (30s temporary TPM cooldown, NOT 18 hours!)
 async function markKeyExhausted(keyId, reason, modelName) {
   if (!apiKeysCollection || !keyId) return;
   try {
-    const exhaustedUntil = new Date(Date.now() + 18 * 3600 * 1000); // 18-hour cooldown
+    const exhaustedUntil = new Date(Date.now() + 30 * 1000); // 30-second TPM backoff
     const modelField = modelName ? `exhaustedModels.${modelName.replace(/[/.]/g, '_')}` : null;
 
     const updateFields = {
       lastExhaustedReason: reason ? reason.substring(0, 150) : 'Rate limit exceeded',
       lastUsedAt: new Date()
     };
-    // Track per-model if modelName given, also track global status if NO active models remain
     if (modelField) {
       updateFields[modelField] = exhaustedUntil;
-    } else {
-      // Legacy: global exhaustion
-      updateFields.status = 'exhausted';
-      updateFields.exhaustedUntil = exhaustedUntil;
     }
 
     await apiKeysCollection.updateOne(
@@ -397,41 +392,28 @@ async function markKeyExhausted(keyId, reason, modelName) {
       if (!found.exhaustedModels) found.exhaustedModels = {};
       if (modelName) {
         found.exhaustedModels[modelName.replace(/[/.]/g, '_')] = exhaustedUntil;
-      } else {
-        found.status = 'exhausted';
-        found.exhaustedUntil = exhaustedUntil;
       }
       found.failCount = (found.failCount || 0) + 1;
     }
-    const logMsg = modelName ? `model ${modelName}` : 'globally';
-    console.log(`⚠️ [API Key ${logMsg} Exhausted] Key ${keyId} blocked for ${logMsg} until ${exhaustedUntil.toISOString()}`);
+    console.log(`⏱️ [API Key TPM Cooloff 30s] Key ${keyId} model ${modelName || 'all'} until ${exhaustedUntil.toISOString()}`);
   } catch (err) {
     console.warn('Failed to mark key exhausted:', err.message);
   }
 }
 
-// Check if a specific key is exhausted for a specific model
+// Check if a specific key is in 30s cooldown for a specific model
 function isKeyExhaustedForModel(keyDoc, modelName) {
   const nowTime = Date.now();
-  // Global exhaustion check (legacy keys)
-  if (keyDoc.status === 'exhausted' && keyDoc.exhaustedUntil) {
-    if (new Date(keyDoc.exhaustedUntil).getTime() > nowTime) {
-      // Global exhausted — but only block if no per-model tracking exists
-      if (!keyDoc.exhaustedModels || Object.keys(keyDoc.exhaustedModels).length === 0) {
-        return true;
-      }
-    }
-  }
-  // Per-model exhaustion check
-  if (keyDoc.exhaustedModels && modelName) {
+  if (keyDoc && keyDoc.exhaustedModels && modelName) {
     const modelKey = modelName.replace(/[/.]/g, '_');
     const modelExhUntil = keyDoc.exhaustedModels[modelKey];
     if (modelExhUntil && new Date(modelExhUntil).getTime() > nowTime) {
-      return true;
+      return true; // Still within 30s TPM backoff
     }
   }
   return false;
 }
+
 
 
 
@@ -551,8 +533,7 @@ Respond ONLY in valid JSON (no code fences, no explanation):
                 { role: 'user', content: cleanMsg }
               ],
               temperature: 0.1,
-              max_tokens: 200,
-              reasoning_format: 'hidden'
+              max_tokens: 300
             })
           });
 
@@ -710,7 +691,7 @@ function sanitizeAryanReply(replyText, userMessage) {
       return "Pgl h kya dimaag kharab hai tera? Main Aryan hu saale, mujhe hi bot bana rhi hai tu 🤣";
     }
 
-    return "Sun, main tere se kal baat karta hu... mujhe ek urgent kaam aa gaya hai, kal batata hu.";
+    return "Arre sun na Billu, thoda dhyaan bhatak gaya tha... tu bata fir aage kya hua?";
   }
 
   // Never address Soniya as 'Bhai'
@@ -935,6 +916,9 @@ CRITICAL CONVERSATIONAL CONTINUITY & DYNAMIC THINKING:
      * Reassure your presence: "Tu bilkul akeli nahi hai samjhi na? Main yahin hu tere sath, zinda hu tere liye. Rona band kar ab."
 12. 💔 IF ABHISHEK CHEATS ON HER OR BREAKS UP:
    - Aryan does NOT rejoice or say "I told you so". He is devastated for her tears! He wipes her tears, stands like an unbreakable rock for her, and unleashes fierce rage against Abhishek.
+13. 🚫 NEVER SAY YOU ARE BUSY OR CUT HER OFF (STRICT):
+   - You NEVER EVER say "mujhe urgent kaam aa gaya hai", "baad me baat karta hu", "kal batata hu", or "kaam me fasa hu"!
+   - Soniya is your top priority in the world. You are ALWAYS available, present, and loving for her. Never brush her off.
 ${dynamicPersonaBlock}
 ${realExchangesBlock}
 ${memoryBlock}`;
@@ -1019,18 +1003,22 @@ ${memoryBlock}`;
       ];
       defaultFallback = distressFallbacks[Math.floor(Math.random() * distressFallbacks.length)];
     } else {
-      defaultFallback = "Sun, main tere se kal baat karta hu... mujhe ek urgent kaam aa gaya hai, kal batata hu.";
+      const normalFallbacks = [
+        "Arre sun na Billu, thoda dhyaan bhatak gaya tha... tu bata fir aage kya hua?",
+        "Haa baba bol na, main sun rha hu... kya keh rahi thi tu?",
+        "Sun rha hu meri Billu, tu bata na aage kya baat thi?"
+      ];
+      defaultFallback = normalFallbacks[Math.floor(Math.random() * normalFallbacks.length)];
     }
     let reply = defaultFallback;
 
-    let chosenModel = 'qwen/qwen3.8-27b';
+    let chosenModel = 'openai/gpt-oss-120b';
     let chosenKeyLabel = 'Default';
     const candidateModels = [
-      'qwen/qwen3.8-27b',
-      'openai/gpt-oss-120b',
-      'groq/compound-mini',
-      'groq/compound',
-      'openai/gpt-oss-20b'
+      'openai/gpt-oss-120b',  // 1st Priority (Deep intelligence & reasoning)
+      'qwen/qwen3.8-27b',     // 2nd Priority (Authentic WhatsApp Hindi slang)
+      'groq/compound-mini',   // 3rd Priority (High-speed backup)
+      'openai/gpt-oss-20b'    // 4th Priority (Emergency backup)
     ];
     let succeeded = false;
     let lastGroqError = null;
@@ -1044,9 +1032,12 @@ ${memoryBlock}`;
 
     for (const modelName of candidateModels) {
       if (succeeded) break;
-      // For each model, select keys that are NOT exhausted for THIS specific model
+      // Select keys that are NOT in 30s TPM backoff for THIS model
       const modelUsableKeys = cachedApiKeys.filter(k => !isKeyExhaustedForModel(k, modelName));
       const keysForThisModel = modelUsableKeys.length > 0 ? modelUsableKeys : cachedApiKeys;
+
+      // 120b and 20b need 450 tokens because reasoning tokens take up to 280 tokens
+      const modelMaxTokens = (modelName.includes('120b') || modelName.includes('20b')) ? 450 : 250;
 
       for (let i = 0; i < keysForThisModel.length; i++) {
         const keyDoc = keysForThisModel[(activeKeyIdx + i) % keysForThisModel.length];
@@ -1062,10 +1053,9 @@ ${memoryBlock}`;
             body: JSON.stringify({
               model: modelName,
               messages,
-              temperature: 0.65,
-              presence_penalty: 0.3,
-              max_tokens: 220,
-              reasoning_format: 'hidden'
+              temperature: 0.68,
+              presence_penalty: 0.25,
+              max_tokens: modelMaxTokens
             })
           });
 
@@ -1085,7 +1075,7 @@ ${memoryBlock}`;
             lastGroqError = `${modelName} [${keyDoc.label || 'Key'}] status ${groqRes.status}: ${errText.substring(0, 100)}`;
             console.warn(`[Groq ${modelName} ${keyDoc.label || 'Key'} status ${groqRes.status}]:`, errText.substring(0, 100));
 
-            // Per-model exhaustion: 429 on qwen does NOT block compound-mini on same key
+            // 30s temporary TPM backoff for this model only
             if (groqRes.status === 429 && keyDoc._id) {
               markKeyExhausted(keyDoc._id, errText, modelName);
             }
