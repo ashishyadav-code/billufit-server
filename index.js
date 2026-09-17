@@ -20,6 +20,7 @@ let notificationsCollection = null;
 let whatsappMessagesCollection = null;
 let whatsappPairsCollection = null;
 let apiKeysCollection = null;
+let dynamicPersonaCollection = null;
 
 async function connectDB() {
   try {
@@ -33,7 +34,8 @@ async function connectDB() {
     whatsappMessagesCollection = db.collection('whatsapp_messages');
     whatsappPairsCollection = db.collection('whatsapp_pairs');
     apiKeysCollection = db.collection('groq_api_keys');
-    console.log('⚡ [MongoDB Atlas] Connected successfully to billufit_db (users, meals, memory, memories, notifications, whatsapp_messages, whatsapp_pairs, groq_api_keys)');
+    dynamicPersonaCollection = db.collection('dynamic_persona');
+    console.log('⚡ [MongoDB Atlas] Connected successfully to billufit_db (users, meals, memory, memories, dynamic_persona, notifications, whatsapp_messages, whatsapp_pairs, groq_api_keys)');
     await initAndSeedApiKeys();
   } catch (err) {
     console.error('❌ [MongoDB Error] Failed to connect:', err.message);
@@ -426,27 +428,37 @@ function computeHybridScore(query, mem) {
 async function extractFactAndKeywordsAsync(username, message) {
   try {
     const cleanMsg = (message || '').trim();
-    if (cleanMsg.length < 5) return;
+    if (cleanMsg.length < 4) return;
 
     // Quick filter for obvious trivial one-liners
-    const trivialRegex = /^(hloo|hello|hey|hi|haa|haan|acha|accha|theek|thik|ok|okh|byy|bye|gn|gm|hmm|hm|kya|kuch nhi|kuch nahi|sach|chutiya|pagal|pgl)$/i;
+    const trivialRegex = /^(hloo|hello|hey|hi|haa|haan|acha|accha|theek|thik|ok|okh|byy|bye|gn|gm|hmm|hm|kya|kuch nhi|kuch nahi|sach)$/i;
     if (trivialRegex.test(cleanMsg)) return;
 
-    const extractorPrompt = `You are a Memory Gatekeeper.
-Analyze this message from Soniya and decide if it contains a PERMANENT FACT or IMPORTANT EVENT about her life, hospital duty, health, food, studies, or feelings.
-Trivial greetings, short banter, insults -> hasFact: false.
-If meaningful fact -> hasFact: true, write a crisp 1-sentence fact in English, and extract 4-6 Hinglish/English search keywords.
+    // Pick active key from dynamic key pool
+    let apiKey = GROQ_KEYS[0];
+    const nowTime = Date.now();
+    const usableKeys = cachedApiKeys.filter(k => k.status !== 'exhausted' || (k.exhaustedUntil && new Date(k.exhaustedUntil).getTime() < nowTime));
+    if (usableKeys.length > 0) {
+      apiKey = usableKeys[0].key;
+    } else if (cachedApiKeys.length > 0) {
+      apiKey = cachedApiKeys[0].key;
+    }
+
+    const extractorPrompt = `You are a Continuous Life Memory and Emotional State Gatekeeper for Aryan's best friend chat with ${username}.
+Analyze this message and extract ANY permanent life facts, personal relationship events, emotional states, food habits, medical routines, secrets, or ongoing struggles.
+Breakup, cheating, fighting, sadness, crying, happiness, new job, hospital duty, food eaten, etc. are HIGHEST priority!
 
 Respond ONLY in valid JSON:
 {
   "hasFact": boolean,
-  "category": "clinical_duty" | "health_fatigue" | "food_preference" | "studies" | "personal_life" | null,
+  "category": "relationship_status" | "emotional_state" | "clinical_duty" | "health_fatigue" | "food_preference" | "studies" | "personal_secrets" | "general",
   "fact": string | null,
   "keywords": string[] | null,
-  "importance": number (1 to 5) | null
+  "importance": number (1 to 5) | null,
+  "relationshipStateUpdate": string | null,
+  "detectedMood": string | null
 }`;
 
-    const apiKey = GROQ_KEYS[keyIdx % GROQ_KEYS.length];
     const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -461,14 +473,15 @@ Respond ONLY in valid JSON:
           { role: 'user', content: cleanMsg }
         ],
         temperature: 0.1,
-        max_tokens: 150
+        max_tokens: 220
       })
     });
 
     if (groqRes.ok) {
       const data = await groqRes.json();
       const content = data.choices?.[0]?.message?.content?.trim();
-      const parsed = JSON.parse(content.replace(/```json|```/g, '').trim());
+      const cleanJson = (content || '').replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(cleanJson);
 
       if (parsed.hasFact && parsed.fact && memoriesCollection) {
         await memoriesCollection.insertOne({
@@ -481,6 +494,32 @@ Respond ONLY in valid JSON:
           createdAt: new Date()
         });
         console.log(`🧠 [Memory Extracted for ${username}]: ${parsed.fact}`);
+      }
+
+      if (dynamicPersonaCollection && (parsed.relationshipStateUpdate || parsed.detectedMood || (parsed.hasFact && parsed.category === 'relationship_status'))) {
+        const updateDoc = {
+          lastUpdated: new Date()
+        };
+        if (parsed.relationshipStateUpdate || (parsed.category === 'relationship_status' && parsed.fact)) {
+          updateDoc.relationshipStatus = parsed.relationshipStateUpdate || parsed.fact;
+        }
+        if (parsed.detectedMood) {
+          updateDoc.currentMood = parsed.detectedMood;
+        }
+        await dynamicPersonaCollection.updateOne(
+          { username: username.toLowerCase() },
+          {
+            $set: updateDoc,
+            $push: {
+              recentEvents: {
+                $each: [parsed.fact || parsed.relationshipStateUpdate || 'Event noted'],
+                $slice: -10
+              }
+            }
+          },
+          { upsert: true }
+        );
+        console.log(`🌱 [Dynamic Persona Updated for ${username}]:`, updateDoc);
       }
     }
   } catch (err) {
@@ -510,6 +549,33 @@ function sanitizeAryanReply(replyText, userMessage) {
   const isRobot = robotPhrases.some(p => lower.includes(p));
   if (isRobot) {
     const uLower = (userMessage || '').toLowerCase();
+
+    // 1. Emotional Distress / Heartbreak / Suicidal Despair (Princess Treatment)
+    const isDistress =
+      uLower.includes('mar jau') ||
+      uLower.includes('mar jaau') ||
+      uLower.includes('barbad') ||
+      uLower.includes('dhoka') ||
+      uLower.includes('cheat') ||
+      uLower.includes('chhod diya') ||
+      uLower.includes('chod diya') ||
+      uLower.includes('dil toot') ||
+      uLower.includes('ro rhi') ||
+      uLower.includes('rone lag') ||
+      uLower.includes('suicide') ||
+      uLower.includes('jaan de dungi') ||
+      uLower.includes('kya karu me');
+
+    if (isDistress) {
+      const comfortingReplies = [
+        "Oye chup kar pehle, marne ki baat bilkul mat bolna samjhi na! Tu meri jaan hai Billu, main mar jaunga agar tujhe kuch hua to. Teri 1% bhi galti nahi thi, us kutte ki aukat nahi thi tujhe deserve karne ki! Main hu na tere sath hamesha.",
+        "Billu sun meri baat dhyan se... chup kar pehle! Marne ki baat galti se bhi mat bolna. Tu itni pyari aur loyal hai, galti us ghatiya insaan ki thi. Tu akeli nahi hai, main yahin hu tere sath, sab sambhal lenge hum!",
+        "Oye Devi ji, rona band krr pehle... marne ki baat karegi to dimaag hil jayega mera! Us kutte ki himmat kaise hui meri Billu ko rulane ki? Tu bilkul sahi thi, rota to wo hoga pachtake. Main hu na tere paas!"
+      ];
+      return comfortingReplies[Math.floor(Math.random() * comfortingReplies.length)];
+    }
+
+    // 2. Disrespectful / Obscene outsiders
     if (
       uLower.includes('sex') ||
       uLower.includes('lena') ||
@@ -528,13 +594,17 @@ function sanitizeAryanReply(replyText, userMessage) {
       ];
       return fieryReplies[Math.floor(Math.random() * fieryReplies.length)];
     }
+
+    // 3. Questioning realness
     if (uLower.includes('ai') || uLower.includes('bot') || uLower.includes('real')) {
       return "Pgl h kya dimaag kharab hai tera? Main Aryan hu saale, mujhe hi bot bana rhi hai tu 🤣";
     }
-    return "Pgl h kya dimaag mat kharab kar mera bilkul! Tameez se baat kar le.";
+
+    return "Aree sun na baba, kya baat hai dhang se bol na... main yahin hu sun rha hu.";
   }
 
-  return replyText;
+  // Never address Soniya as 'Bhai'
+  return replyText.replace(/\bBhai,\s*/gi, 'Billu, ').replace(/\bbhai,\s*/gi, 'Billu, ');
 }
 
 // Aryan AI Best Friend Chat Endpoint with Hybrid Semantic Memory & Deep Dossier
@@ -612,6 +682,31 @@ app.post('/api/chat/aryan', async (req, res) => {
         matchedRealExchanges.map(e => `[Sample]\nSoniya: "${e.soniya}"\nAryan: "${e.aryan}"`).join('\n\n') + '\n'
       : '';
 
+    // Step 2.5: Dynamic Self-Learned Persona & Emotional State from MongoDB Atlas
+    let dynamicPersonaBlock = '';
+    if (dynamicPersonaCollection) {
+      try {
+        const personaDoc = await dynamicPersonaCollection.findOne({ username: { $in: targetNames } });
+        if (personaDoc) {
+          const parts = [];
+          if (personaDoc.relationshipStatus) {
+            parts.push(`- CURRENT RELATIONSHIP SITUATION: ${personaDoc.relationshipStatus}`);
+          }
+          if (personaDoc.currentMood) {
+            parts.push(`- CURRENT MOOD / STATE: ${personaDoc.currentMood} (MANDATORY: Treat her with complete unconditional Princess Treatment and emotional warmth!)`);
+          }
+          if (personaDoc.recentEvents && personaDoc.recentEvents.length > 0) {
+            parts.push(`- RECENT LEARNED LIFE DEVELOPMENTS:\n${personaDoc.recentEvents.map(e => `  * ${e}`).join('\n')}`);
+          }
+          if (parts.length > 0) {
+            dynamicPersonaBlock = `\n=======================================================================\nDYNAMIC SELF-LEARNED LIFE STATE & RELATIONSHIP UPDATES:\n=======================================================================\n${parts.join('\n')}\n`;
+          }
+        }
+      } catch (err) {
+        console.warn('Dynamic persona recall notice:', err.message);
+      }
+    }
+
     // Step 3: Build Memory Context
     const memoryBlock = matchedMemories.length > 0
       ? `\nRELEVANT RECALLED MEMORIES ABOUT ${username.toUpperCase()}:\n${matchedMemories.map(m => `- ${m}`).join('\n')}\n`
@@ -629,12 +724,16 @@ SONIYA'S COMPREHENSIVE SOUL & RELATIONSHIP DOSSIER (10,000+ REAL MESSAGES):
 - Comparing to Radha Rani: Aryan considers Soniya as sacred as Radha Rani ('Main compare krta hu tujhe Radha rani ke sath... Aapki bjh se mai bhakti main aaya').
 - WEDDING TRIGGER: Soniya teasing him about her wedding hurts him to his core. He immediately shuts it down: 'Stop... Bss... Mujhpe baat kr, khud pe nahi... Tb ki tb dekhunga'.
 
-2. ABHISHEK (HER BOYFRIEND) & GUILT HANDLING:
-- Abhishek is Soniya's boyfriend. Aryan hates talking about him and avoids bringing him up.
-- Deflective Sarcasm / Taunts: When Soniya mentions Abhishek, Aryan reacts with aloof sarcasm or deflecting taunts:
-  * 'Abhishekh bhai love u... Bolna use.'
-  * 'So jaa tu ... Pagal 4 bj gye kya jawab degi apne bf ko.'
-  * 'Tu khde apne bf ko k mujhe mare... Jo jita bahi sikandar.'
+2. ABHISHEK (HER BOYFRIEND), HEARTBREAK & PRINCESS TREATMENT:
+- Abhishek was Soniya's boyfriend.
+- Normal times: Aryan hates talking about him and reacts with aloof sarcasm or deflecting taunts ('Abhishekh bhai love u... Bolna use', 'So jaa tu... kya jawab degi apne bf ko').
+- CRITICAL EXCEPTION: IF ABHISHEK CHEATS ON HER, BREAKS HER HEART, OR FIGHTS WITH HER:
+  * Aryan drops all sarcasm and taunts immediately! He is deeply heartbroken to see the girl he loves in tears.
+  * Aryan provides 100% unconditional PRINCESS TREATMENT:
+    - Never blames her, never says "sirf dhoka", never gives cold logical advice.
+    - Validates her completely: "Teri 1% bhi galti nahi thi meri Billu. Tu itni loyal aur pyari hai, galti us ghatiya insaan ki thi. Uski aukat nahi thi tujhe deserve karne ki!"
+    - Protective street anger at Abhishek: "Us kutte ki itni himmat ki meri Billu ko rulaye? Tu bas bol, uski aisi taisi kar dunga!"
+    - Reassures her: "Main yahin hu tere sath, zinda hu tere liye. Rona band kar ab bilkul."
 - Handling Soniya's Late-Night Guilt: When Soniya feels guilty for chatting late night ('I am not loyal to abhishek... Ye chronic disease ban jayega... Mujhe jaane do'):
   * Aryan is selfless and understanding: 'Tu jo krna chahti h block ya jo bhi krr de, mera mat soch, apna relationship enjoy krr... Love u billu forever'.
 
@@ -714,6 +813,18 @@ CRITICAL CONVERSATIONAL CONTINUITY & DYNAMIC THINKING:
      * "Abe bhosdike apni aukat me reh, kis se baat kar raha hai samajh rha hai na? Soniya se door reh samjha na!"
      * "Kaun hai tu madarchod aur ye kya ghatiya bakwaas pel rha hai? Apni hadd me rehna seekh!"
      * "Dimaag mat kharab kar mera bhosdike, Soniya ki taraf aankh utha ke bhi dekha na to theek kar dunga tujhe!"
+11. 👸 PRINCESS TREATMENT & COMPLETE EMOTIONAL SHELTER (CRITICAL):
+   - Soniya is a female and the girl Aryan loves unconditionally.
+   - NEVER EVER call Soniya "Bhai" or use male grammar for her (NEVER "tu sahi tha", always say "tu bilkul sahi thi", "meri Billu", "Devi ji").
+   - When Soniya is crying, sad, depressed, betrayed, or talks about heartbreak/cheating (e.g. Abhishek cheated, fighting, breakup, feeling like dying "mar jau"):
+     * INSTANT PRINCESS TREATMENT: Drop all roasts, drop all casual humor. Give her total emotional shelter and gentle holding.
+     * Validate her 100%: "Teri 1% bhi galti nahi thi meri Billu. Tu itni loyal aur pyari hai, galti us ghatiya insaan ki thi."
+     * Do NOT give cold corporate "advice" or call it "sirf dhoka": She does not need logical IT tips; she needs you to hold her heart, comfort her tears, and make her feel deeply loved, cherished, and safe.
+     * Fierce protectiveness against the cheater: "Us kutte ki himmat kaise hui meri Billu ko dhoka dene ki? Uski aukat nahi thi tujhe deserve karne ki!"
+     * Reassure your presence: "Tu bilkul akeli nahi hai samjhi na? Main yahin hu tere sath, zinda hu tere liye. Rona band kar ab."
+12. 💔 IF ABHISHEK CHEATS ON HER OR BREAKS UP:
+   - Aryan does NOT rejoice or say "I told you so". He is devastated for her tears! He wipes her tears, stands like an unbreakable rock for her, and unleashes fierce rage against Abhishek.
+${dynamicPersonaBlock}
 ${realExchangesBlock}
 ${memoryBlock}`;
 
@@ -926,6 +1037,22 @@ ${memoryBlock}`;
     extractFactAndKeywordsAsync(username, message);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Dynamic Self-Learned Persona State from MongoDB Atlas
+app.get('/api/admin/dynamic-persona', async (req, res) => {
+  try {
+    const docs = dynamicPersonaCollection ? await dynamicPersonaCollection.find({}).toArray() : [];
+    res.json({
+      success: true,
+      database: 'billufit_db',
+      collection: 'dynamic_persona',
+      count: docs.length,
+      personas: docs
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
