@@ -705,6 +705,20 @@ function sanitizeAryanReply(replyText, userMessage) {
     }
   }
 
+  // Break repetitive catchphrase loops
+  if (uLower.includes('tha ya he') || uLower.includes('tha ya h') || uLower.includes('tha ya hai')) {
+    if (lower.includes('kya khayal aaya') || lower.includes('drama ka boss')) {
+      return "Are tha na baba! Pehle tha na tera bf, ab thodi na hai! Tu kyu pooch rahi h achanak?";
+    }
+  }
+
+  if (lower.includes('kya khayal aaya ki bhool gaye')) {
+    replyText = replyText.replace(/Kya khayal aaya ki bhool gaye\??\s*😏?/gi, '').trim();
+    if (replyText.length < 10) {
+      return "Are seedhe hi bol rha hu baba, tu itna gusse me kyu puch rhi h?";
+    }
+  }
+
   // Never address Soniya as 'Bhai'
   return replyText.replace(/\bBhai,\s*/gi, 'Billu, ').replace(/\bbhai,\s*/gi, 'Billu, ');
 }
@@ -864,6 +878,13 @@ CORE CONVERSATION RULES:
       * Say: "Pgl h kya, main Aryan hu aur kaun! Dimaag kharab ho gaya kya tera?", "Abe mera hi naam bhool gayi kya heroine?".
 11. 🚫 DO NOT BRING UP 'OT' OR 'DUTY' UNPROMPTED:
     - Never randomly say "OT ka kaam kaisa raha", "OT me thak gayi kya", or "headache ho raha hai kya" unless Soniya explicitly brings up hospital or duty first! Talk about what she is talking about right now.
+12. 🚫 STRICT ANTI-REPETITION & DIRECT ANSWERS (CRITICAL):
+    - NEVER repeat phrases, questions, or catchphrases from your previous replies!
+    - Strictly forbidden to repeat: "Kya khayal aaya ki bhool gaye?", "Abhishek woh hi tha jo...", "drama ka boss", or emoji 😏.
+    - When Soniya asks "tha ya he?" or "tha ya h?":
+      * Answer DIRECTLY: "Are tha na baba! Pehle tha na tera bf, ab thodi na hai! Tu kyu pooch rahi h achanak?".
+    - When Soniya asks "seedhe seedhe bol na" or "are bata na":
+      * Answer DIRECTLY: "Seedhe hi bol rha hu baba, Abhishek tera pehle wala boyfriend tha. Ab kya ho gaya use?".
 ${dynamicPersonaBlock}
 ${realExchangesBlock}
 ${memoryBlock}`;
@@ -902,6 +923,12 @@ ${memoryBlock}`;
           if (wordExpansions[lowerRaw]) {
             text = wordExpansions[lowerRaw];
           }
+        }
+
+        // Strip toxic repetition loops from assistant history so it doesn't teach the LLM to repeat
+        if (role === 'assistant') {
+          text = text.replace(/Kya khayal aaya ki bhool gaye\??\s*😏?/gi, '').trim();
+          text = text.replace(/drama ka boss\w*/gi, 'drama').trim();
         }
 
         if (cleanHistory.length > 0 && cleanHistory[cleanHistory.length - 1].content === text) {
@@ -997,8 +1024,9 @@ ${memoryBlock}`;
             body: JSON.stringify({
               model: modelName,
               messages,
-              temperature: 0.68,
-              presence_penalty: 0.25,
+              temperature: 0.72,
+              presence_penalty: 0.45,
+              frequency_penalty: 0.55,
               max_tokens: modelMaxTokens
             })
           });
