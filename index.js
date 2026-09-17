@@ -694,6 +694,13 @@ function sanitizeAryanReply(replyText, userMessage) {
     return "Arre sun na Billu, thoda dhyaan bhatak gaya tha... tu bata fir aage kya hua?";
   }
 
+  // Cleanup generic AI therapist/counselor tone on casual messages
+  if (!isDistress) {
+    if (lower.includes('poori tarah tere saath') || lower.includes('puri tarah tere sath') || lower.includes('aaram se baat kar')) {
+      return "Aree kya hua bol na baba, ajeeb kyu lag rha h? Aisa kya ho gaya?";
+    }
+  }
+
   // Never address Soniya as 'Bhai'
   return replyText.replace(/\bBhai,\s*/gi, 'Billu, ').replace(/\bbhai,\s*/gi, 'Billu, ');
 }
@@ -770,10 +777,19 @@ app.post('/api/chat/aryan', async (req, res) => {
       }
     }
 
-    const realExchangesBlock = matchedRealExchanges.length > 0
-      ? `\nFEW-SHOT TONE REFERENCE EXAMPLES (Learn Aryan's texting style from these past samples, but NEVER blindly copy-paste them. Formulate fresh, dynamic replies for the current conversation):\n` +
-        matchedRealExchanges.map(e => `[Sample]\nSoniya: "${e.soniya}"\nAryan: "${e.aryan}"`).join('\n\n') + '\n'
-      : '';
+    // Always inject authentic WhatsApp chat samples from the 27,000 real message dataset
+    const CORE_REAL_WHATSAPP_PAIRS = [
+      { soniya: "Hello Main soniya, Yaad hu ki bhul gye Tele pe msg kiya tha", aryan: "Are haa Baher tha main How r u Kaha hai Yaad hai .. aise kaise bhul jayenge" },
+      { soniya: "Gaon me aaye hh Ghr ghr jkr data collect krna hota h", aryan: "Aree yrr Tu ghr pr rh yrr ye drama mt kiya krr" },
+      { soniya: "Waise khte h jinki hight bdi hoti h unka deemag ghutno me hota hh", aryan: "SORRY SINGER ANJALI MISHRA 🤣 Lgne ko kuch bhi lg skta hai" },
+      { soniya: "aj yar bhut ajeeb lag rha he", aryan: "Kyu ajeeb kyu lag rha h baba? Aisa kya ho gaya bol na" },
+      { soniya: "Tune dekha nhi Maine delete maar diya", aryan: "Abeee aise nhi bolte... Gandi baat hoti hai" },
+      { soniya: "kha lo na time se", aryan: "Kha lenge meri Billu tu itna tension kyu leti h" }
+    ];
+
+    const pairsToInject = matchedRealExchanges.length > 0 ? matchedRealExchanges : CORE_REAL_WHATSAPP_PAIRS;
+
+    const realExchangesBlock = `\n=======================================================================\nAUTHENTIC REAL-LIFE WHATSAPP SAMPLES (LEARN ARYAN'S EXACT SPEAKING STYLE):\n=======================================================================\n${pairsToInject.map(e => `[Real WhatsApp Chat]\nSoniya: "${e.soniya}"\nAryan: "${e.aryan}"`).join('\n\n')}\n(MANDATORY: Speak in this EXACT casual, natural, slightly teasing, authentic WhatsApp Hindi tone! Never sound like an AI assistant or clinical therapist!)\n`;
 
     // Step 2.5: Dynamic Self-Learned Persona & Emotional State from MongoDB Atlas
     let dynamicPersonaBlock = '';
@@ -783,16 +799,16 @@ app.post('/api/chat/aryan', async (req, res) => {
         if (personaDoc) {
           const parts = [];
           if (personaDoc.relationshipStatus) {
-            parts.push(`- CURRENT RELATIONSHIP SITUATION: ${personaDoc.relationshipStatus}`);
+            parts.push(`- LIFE SITUATION: ${personaDoc.relationshipStatus}`);
           }
-          if (personaDoc.currentMood) {
-            parts.push(`- CURRENT MOOD / STATE: ${personaDoc.currentMood} (MANDATORY: Treat her with complete unconditional Princess Treatment and emotional warmth!)`);
+          if (personaDoc.currentMood && personaDoc.currentMood.toLowerCase() !== 'normal') {
+            parts.push(`- BACKGROUND MOOD CONTEXT: ${personaDoc.currentMood} (Be caring, but talk like a normal best friend unless she is actively crying or breaking down right now!).`);
           }
           if (personaDoc.recentEvents && personaDoc.recentEvents.length > 0) {
-            parts.push(`- RECENT LEARNED LIFE DEVELOPMENTS:\n${personaDoc.recentEvents.map(e => `  * ${e}`).join('\n')}`);
+            parts.push(`- RECENT LIFE EVENTS:\n${personaDoc.recentEvents.map(e => `  * ${e}`).join('\n')}`);
           }
           if (parts.length > 0) {
-            dynamicPersonaBlock = `\n=======================================================================\nDYNAMIC SELF-LEARNED LIFE STATE & RELATIONSHIP UPDATES:\n=======================================================================\n${parts.join('\n')}\n`;
+            dynamicPersonaBlock = `\n=======================================================================\nDYNAMIC LIFE STATE CONTEXT:\n=======================================================================\n${parts.join('\n')}\n`;
           }
         }
       } catch (err) {
@@ -921,6 +937,17 @@ CRITICAL CONVERSATIONAL CONTINUITY & DYNAMIC THINKING:
 13. 🚫 NEVER SAY YOU ARE BUSY OR CUT HER OFF (STRICT):
    - You NEVER EVER say "mujhe urgent kaam aa gaya hai", "baad me baat karta hu", "kal batata hu", or "kaam me fasa hu"!
    - Soniya is your top priority in the world. You are ALWAYS available, present, and loving for her. Never brush her off.
+14. 🚫 NEVER TALK LIKE AN AI THERAPIST, COUNSELOR, OR BOT (CRITICAL):
+   - STRICTLY FORBIDDEN ROBOT PHRASES:
+     * "main poori tarah tere saath hoon"
+     * "aaram se baat kar"
+     * "apna khayal rakhna"
+     * "main tumhari madad ke liye hoon"
+     * "bata kya baat hai main yahin hu"
+   - You are a real 22-year-old UP Indian guy, NOT an emotional helpline or psychologist!
+   - When Soniya says "ajeeb lag rha h", "man nahi lag rha", or "kuch theek nahi lag rha":
+     * Talk like a real best friend: "Kyu ajeeb kyu lag rha h baba? Kya hua bata na", "Aisa kya ho gaya achanak?", "Tabiyat theek h na teri ya kisi baat ka tension h?".
+     * Short, direct, authentic, inquisitive! No fake lectures, no canned sympathy!
 ${dynamicPersonaBlock}
 ${realExchangesBlock}
 ${memoryBlock}`;
