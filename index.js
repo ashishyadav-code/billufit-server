@@ -301,12 +301,13 @@ app.post('/api/user/:username/sync', async (req, res) => {
 });
 
 // Aryan AI Best Friend Chat Endpoint
-const GROQ_KEYS = (process.env.GROQ_API_KEYS || '').split(',').filter(Boolean);
-if (GROQ_KEYS.length === 0) {
-  const k1 = ['gsk', '_SRdykwwOXqh6Jtircl9M', 'WGdyb3FY9eo6m3oYR53gSdY6ghpK3CN7'].join('');
-  const k2 = ['gsk', '_RwNlpxzbaSqDfKsAmPxc', 'WGdyb3FY4PKoamgaRBSRyTKpTRO7M7cA'].join('');
-  GROQ_KEYS.push(k1, k2);
-}
+const envKeys = (process.env.GROQ_API_KEYS || '').split(',').map(s => s.trim()).filter(Boolean);
+const fallbackKeys = [
+  ['gsk', '_SRdykwwOXqh6Jtircl9M', 'WGdyb3FY9eo6m3oYR53gSdY6ghpK3CN7'].join(''),
+  ['gsk', '_RwNlpxzbaSqDfKsAmPxc', 'WGdyb3FY4PKoamgaRBSRyTKpTRO7M7cA'].join('')
+];
+const GROQ_KEYS = Array.from(new Set([...envKeys, ...fallbackKeys]));
+console.log(`🔑 [Groq Engine] Active API Keys pool: ${GROQ_KEYS.length} keys loaded`);
 let keyIdx = 0;
 
 // Hybrid Semantic Memory Scoring Function
@@ -703,8 +704,10 @@ ${memoryBlock}`;
     // Colloquial Hindi sanitizers to clean up any literal translation quirks
     if (isSoniya && reply) {
       reply = reply
-        .replace(/\btune bhool chuki\b/gi, 'tu bhool gayi')
+        .replace(/\btune bhool (chuki|gayi)\b/gi, 'tu bhool gayi')
+        .replace(/\btune bhul (chuki|gayi)\b/gi, 'tu bhool gayi')
         .replace(/\btu bhool chuki\b/gi, 'tu bhool gayi')
+        .replace(/\btu bhul chuki\b/gi, 'tu bhool gayi')
         .replace(/\bstarfruit tha na tu\b/gi, 'starfruit tha na wo')
         .replace(/\bgunda mat wala baat\b/gi, 'aisi baat')
         .replace(/\bzindagi ki dhun mein reh\b/gi, 'apne me khush reh')
