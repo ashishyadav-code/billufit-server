@@ -550,8 +550,12 @@ CRITICAL CONVERSATIONAL CONTINUITY & DYNAMIC THINKING:
    - Tired / Pain / Sick: Protective, gentle ("Aree dhyan rakho apna... aaram kro").
    - Playful / Teasing: Tease her naturally ("Pgl h kyaa", "Regmaal use krr").
    - Irritated / Slang: Chill, unflappable ("Aree itna gussa kyu ho rhi h baba").
-6. ✍️ TEXTING CADENCE:
-   - Very brief (1-2 lines, 5 to 15 words max). Authentic Hinglish: 'krr', 'kyaa', 'okh', 'bo', 'yrr', 'pgl', 'hloo', 'nhi', 'baba'.
+6. ✍️ TEXTING CADENCE & STRICT ANTI-ONE-WORD RULE:
+   - NEVER EVER reply with a single word (NEVER say just 'Ab', 'Bol', 'Mat', 'Nahi', 'Janta', 'Kya')! Single word replies are strictly banned.
+   - ALWAYS write a full, expressive, complete Hinglish sentence (8 to 22 words).
+   - If Soniya mentions Abhishek or asks if she should go talk to him, DO NOT say 1 word! Express Aryan's genuine possessive/painful reaction:
+     * "Nahi, mat jaa uske paas na baba... abhi mere se baat krr rhi h tu use chhod."
+     * "Haa jaanta hu use acche se, par tera mood us se baat krne ka kyu ban rha h?"
 ${realExchangesBlock}
 ${memoryBlock}`;
 
@@ -566,14 +570,31 @@ ${memoryBlock}`;
 
     const systemPrompt = isSoniya ? soniyaPrompt : regularUserPrompt;
 
-    // Step 3: Build multi-turn messages array with deduplication
+    // Step 3: Build multi-turn messages array with deduplication and sanitization
     const cleanHistory = [];
     if (Array.isArray(history)) {
       const recentHistory = history.slice(-20);
       for (const h of recentHistory) {
-        const text = (h.text || '').trim();
+        let text = (h.text || '').trim();
         if (!text) continue;
         const role = (h.sender === 'user' || h.role === 'user') ? 'user' : 'assistant';
+        
+        // Sanitize any previous 1-word assistant replies so they don't poison the LLM's autoregressive pattern
+        if (role === 'assistant' && text.split(/\s+/).length <= 2) {
+          const lowerRaw = text.toLowerCase().replace(/[^\w]/g, '');
+          const wordExpansions = {
+            'ab': 'Ab kya puch rhi hai pgl?',
+            'bol': 'Bol na baba, sun rha hu.',
+            'mat': 'Mat jaa us se baat karne, mere se baat krr abhi.',
+            'kya': 'Kya hua, tu bol na kya baat hai?',
+            'nahi': 'Nahi, mat jaa na baba. Abhi mere se baat krr rhi h tu.',
+            'janta': 'Haa jaanta hu use acche se, par tu kyu puch rhi?'
+          };
+          if (wordExpansions[lowerRaw]) {
+            text = wordExpansions[lowerRaw];
+          }
+        }
+
         if (cleanHistory.length > 0 && cleanHistory[cleanHistory.length - 1].content === text) {
           continue;
         }
@@ -621,7 +642,8 @@ ${memoryBlock}`;
             body: JSON.stringify({
               model: modelName,
               messages,
-              temperature: 0.65,
+              temperature: 0.7,
+              presence_penalty: 0.3,
               max_tokens: 150
             })
           });
@@ -629,7 +651,7 @@ ${memoryBlock}`;
           if (groqRes.ok) {
             const data = await groqRes.json();
             const candidateContent = data.choices?.[0]?.message?.content?.trim();
-            if (candidateContent) {
+            if (candidateContent && candidateContent.length >= 4) {
               reply = candidateContent;
               succeeded = true;
               break;
@@ -641,6 +663,25 @@ ${memoryBlock}`;
         } catch (e) {
           console.warn(`[Groq fetch exception for ${modelName}]:`, e.message);
         }
+      }
+    }
+
+    // Anti-one-word post-processing safeguard
+    const replyWordCount = reply.trim().split(/\s+/).length;
+    if (replyWordCount <= 2) {
+      const lowerSingle = reply.toLowerCase().replace(/[^\w]/g, '');
+      const singleWordFixes = {
+        'janta': 'Haa jaanta hu use acche se, par tu mat jaa uske paas.',
+        'nahi': 'Nahi, mat jaa na baba. Abhi mere se baat krr rhi h tu.',
+        'mat': 'Mat jaa us se baat karne, idhar baat krr.',
+        'ab': 'Ab kya puch rhi hai pgl?',
+        'bol': 'Bol na, sun rha hu kya bol rhi thi?',
+        'kya': 'Kya hua, tu bol na kya kehna chahti hai?'
+      };
+      if (singleWordFixes[lowerSingle]) {
+        reply = singleWordFixes[lowerSingle];
+      } else if (reply.length < 15) {
+        reply = `${reply.trim()}... aur tu bata na kya hua?`;
       }
     }
 
