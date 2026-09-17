@@ -1153,7 +1153,7 @@ ${memoryBlock}`;
       dbRecallMs,
       inferenceMs,
       keysTotal: cachedApiKeys.length,
-      keysActive: usableKeyDocs.length,
+      keysActive: cachedApiKeys.filter(k => k.status !== 'exhausted').length,
       lastError: succeeded ? null : lastGroqError,
       steps: [
         { id: 1, name: "1. Intent & Input Tokenizer", status: "Done", durationMs: Math.max(1, tDbStart - t0) },
