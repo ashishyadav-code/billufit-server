@@ -17,6 +17,8 @@ let mealsCollection = null;
 let memoryCollection = null;
 let memoriesCollection = null;
 let notificationsCollection = null;
+let whatsappMessagesCollection = null;
+let whatsappPairsCollection = null;
 
 async function connectDB() {
   try {
@@ -27,7 +29,9 @@ async function connectDB() {
     memoryCollection = db.collection('memory');
     memoriesCollection = db.collection('memories');
     notificationsCollection = db.collection('notifications');
-    console.log('⚡ [MongoDB Atlas] Connected successfully to billufit_db (users, meals, memory, memories, notifications)');
+    whatsappMessagesCollection = db.collection('whatsapp_messages');
+    whatsappPairsCollection = db.collection('whatsapp_pairs');
+    console.log('⚡ [MongoDB Atlas] Connected successfully to billufit_db (users, meals, memory, memories, notifications, whatsapp_messages, whatsapp_pairs)');
   } catch (err) {
     console.error('❌ [MongoDB Error] Failed to connect:', err.message);
   }
@@ -435,7 +439,34 @@ app.post('/api/chat/aryan', async (req, res) => {
       matchedMemories = uniqueFacts;
     }
 
-    // Step 2: Build Memory Context
+    // Step 2: Query Real WhatsApp Exchanges for Exact Tone & Dialogue Copying
+    let matchedRealExchanges = [];
+    if (isSoniya && whatsappPairsCollection) {
+      try {
+        const cleanQuery = message.replace(/[^\w\s]/g, ' ').trim();
+        if (cleanQuery.length >= 3) {
+          const pairs = await whatsappPairsCollection.find(
+            { $text: { $search: cleanQuery } },
+            { score: { $meta: 'textScore' } }
+          ).sort({ score: { $meta: 'textScore' } }).limit(2).toArray();
+
+          matchedRealExchanges = pairs.map(p => ({
+            date: p.date,
+            soniya: p.soniyaText,
+            aryan: p.aryanReply
+          }));
+        }
+      } catch (err) {
+        // Fallback silently if text search has syntax issues
+      }
+    }
+
+    const realExchangesBlock = matchedRealExchanges.length > 0
+      ? `\nHISTORICAL REAL EXCHANGES FROM YOUR ACTUAL WHATSAPP CHATS (Copy this exact wording and tone):\n` +
+        matchedRealExchanges.map(e => `[Date: ${e.date}]\nSoniya said: "${e.soniya}"\nAryan replied: "${e.aryan}"`).join('\n\n') + '\n'
+      : '';
+
+    // Step 3: Build Memory Context
     const memoryBlock = matchedMemories.length > 0
       ? `\nRELEVANT RECALLED MEMORIES ABOUT ${username.toUpperCase()}:\n${matchedMemories.map(m => `- ${m}`).join('\n')}\n`
       : '';
@@ -506,6 +537,7 @@ CRITICAL SITUATIONAL & EMOTIONAL INTELLIGENCE (TONE MATCHING):
 6. 🚫 ZERO WORKOUT NAGGING: Never say workout/gym unless she asks.
 7. 🔄 ANTI-REPETITION: Never repeat questions back-to-back.
 8. ✍️ TEXTING CADENCE: Very short (5 to 14 words max). Hinglish: 'krr', 'kyaa', 'okh', 'bo', 'yrr', 'pgl', 'hloo', 'nhi'. Emojis: 🤣, 🙂, 🤧, 😫, 😬, 😶, 😐, 🤡, 🫠, 🫣.
+${realExchangesBlock}
 ${memoryBlock}`;
 
     const regularUserPrompt = `You are Aryan Yadav, personal fitness and lifestyle companion on BilluFit for ${username}.
