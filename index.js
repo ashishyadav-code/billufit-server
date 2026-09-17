@@ -735,6 +735,7 @@ app.post('/api/chat/aryan', async (req, res) => {
       }
       matchedMemories = uniqueFacts;
     }
+    const tMemoriesEnd = Date.now();
 
     // Step 2: Intelligent Topical Querying of Real WhatsApp Exchanges (Style Reference Only)
     let matchedRealExchanges = [];
@@ -798,6 +799,7 @@ app.post('/api/chat/aryan', async (req, res) => {
         console.warn('Dynamic persona recall notice:', err.message);
       }
     }
+    const tDbEnd = Date.now();
 
     // Step 3: Build Memory Context
     const memoryBlock = matchedMemories.length > 0
@@ -1124,26 +1126,69 @@ ${memoryBlock}`;
     // Intercept and replace any AI/robot safety refusal strings with authentic in-character reactions
     reply = sanitizeAryanReply(reply, message);
 
-    const totalMs = Date.now() - t0;
-    const dbRecallMs = tInferenceStart - tDbStart;
-    const inferenceMs = tInferenceEnd - tInferenceStart;
+    const tSanitizeEnd = Date.now();
+    const totalMs = tSanitizeEnd - t0;
+    const tokenizerMs = Math.max(1, tDbStart - t0);
+    const memoriesRecallMs = Math.max(1, (typeof tMemoriesEnd !== 'undefined' ? tMemoriesEnd : tDbStart) - tDbStart);
+    const styleAndPersonaMs = Math.max(1, (typeof tDbEnd !== 'undefined' ? tDbEnd : tInferenceStart) - (typeof tMemoriesEnd !== 'undefined' ? tMemoriesEnd : tDbStart));
+    const dbRecallMs = memoriesRecallMs + styleAndPersonaMs;
+    const inferenceMs = Math.max(1, tInferenceEnd - tInferenceStart);
+    const guardMs = Math.max(1, tSanitizeEnd - tInferenceEnd);
 
     const telemetry = {
       model: succeeded ? chosenModel : 'Fallback',
       keyUsed: succeeded ? chosenKeyLabel : 'None',
       succeeded,
       totalMs,
+      totalSec: (totalMs / 1000).toFixed(2) + 's',
       dbRecallMs,
+      dbRecallSec: (dbRecallMs / 1000).toFixed(2) + 's',
       inferenceMs,
+      inferenceSec: (inferenceMs / 1000).toFixed(2) + 's',
       keysTotal: cachedApiKeys.length,
       keysActive: cachedApiKeys.filter(k => k.status !== 'exhausted').length,
       lastError: succeeded ? null : lastGroqError,
       steps: [
-        { id: 1, name: "1. Intent & Input Tokenizer", status: "Done", durationMs: Math.max(1, tDbStart - t0) },
-        { id: 2, name: "2. MongoDB Atlas Memory Recall", status: "Done", durationMs: Math.max(10, Math.floor(dbRecallMs * 0.4)), details: `${matchedMemories.length} facts matched` },
-        { id: 3, name: "3. Real WhatsApp Style Retrieval", status: "Done", durationMs: Math.max(10, Math.floor(dbRecallMs * 0.6)), details: `${matchedRealExchanges.length} pairs retrieved` },
-        { id: 4, name: "4. Groq LPU Neural Inference", status: "Done", durationMs: inferenceMs, details: `${chosenModel} (${chosenKeyLabel})` },
-        { id: 5, name: "5. Anti-Loop & Continuity Guard", status: "Done", durationMs: Math.max(1, totalMs - (tInferenceEnd - t0)), details: "Passed" }
+        {
+          id: 1,
+          name: "1. Intent & Input Tokenizer",
+          status: "Done",
+          durationMs: tokenizerMs,
+          durationSec: (tokenizerMs / 1000).toFixed(2) + 's',
+          details: `${cleanUser} query parsed`
+        },
+        {
+          id: 2,
+          name: "2. MongoDB Atlas Memory Recall",
+          status: "Done",
+          durationMs: memoriesRecallMs,
+          durationSec: (memoriesRecallMs / 1000).toFixed(2) + 's',
+          details: `${matchedMemories.length} facts matched`
+        },
+        {
+          id: 3,
+          name: "3. Real WhatsApp Style & Life State",
+          status: "Done",
+          durationMs: styleAndPersonaMs,
+          durationSec: (styleAndPersonaMs / 1000).toFixed(2) + 's',
+          details: `${matchedRealExchanges.length} pairs retrieved, life state active`
+        },
+        {
+          id: 4,
+          name: "4. Groq Neural Inference",
+          status: succeeded ? "Done" : "Fallback Used",
+          durationMs: inferenceMs,
+          durationSec: (inferenceMs / 1000).toFixed(2) + 's',
+          details: `${chosenModel} via ${chosenKeyLabel}`
+        },
+        {
+          id: 5,
+          name: "5. Continuity & Anti-Loop Guard",
+          status: "Done",
+          durationMs: guardMs,
+          durationSec: (guardMs / 1000).toFixed(2) + 's',
+          details: "Tone & Princess Treatment verified"
+        }
       ]
     };
 
