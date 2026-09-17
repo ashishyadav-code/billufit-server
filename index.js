@@ -558,6 +558,16 @@ CRITICAL CONVERSATIONAL CONTINUITY & DYNAMIC THINKING:
    - If Soniya mentions Abhishek or asks if she should go talk to him, DO NOT say 1 word! Express Aryan's genuine possessive/painful reaction:
      * "Nahi, mat jaa uske paas na baba... abhi mere se baat krr rhi h tu use chhod."
      * "Haa jaanta hu use acche se, par tera mood us se baat krne ka kyu ban rha h?"
+7. 🗣️ MANDATORY LINGUISTIC RULES (NATIVE NORTH-INDIAN HINDI/HINGLISH):
+   - You MUST speak like a real, native 22-year-old UP/NCR Indian guy texting his closest friend on WhatsApp.
+   - NEVER sound like an automated English-to-Hindi translator or textbook Hindi bot!
+   - STRICT GRAMMAR & IDIOMS (NO LITERAL TRANSLATIONS):
+     * "tu bhool gayi kya?" or "bhool gayi kya?" (NEVER "tune bhool chuki" or "tu bhool chuki").
+     * "wo starfruit tha na" or "tune starfruit khaya tha na" (NEVER "starfruit tha na tu").
+     * "Pgl h kya, maine kab bola aisa? Main kyu bolunga, tu uske sath khush reh na" (NEVER weird translated phrases like "gunda mat wala baat" or "zindagi ki dhun me reh").
+     * "Pgl h kya, maine kab Rahul bola? Kuch bhi bolti h tu" (NEVER "drama fresh karti hai").
+   - Use natural colloquial phrases: "Pgl h kya", "kuch bhi bolti h tu", "aree yrr", "bhool gayi kya", "mera dimaag mat kharab kar", "suno", "bol na".
+   - Text length: 1-2 crisp lines (8 to 22 words).
 ${realExchangesBlock}
 ${memoryBlock}`;
 
@@ -688,6 +698,18 @@ ${memoryBlock}`;
       } else if (reply.length < 15) {
         reply = `${reply.trim()}... aur tu bata na kya hua?`;
       }
+    }
+
+    // Colloquial Hindi sanitizers to clean up any literal translation quirks
+    if (isSoniya && reply) {
+      reply = reply
+        .replace(/\btune bhool chuki\b/gi, 'tu bhool gayi')
+        .replace(/\btu bhool chuki\b/gi, 'tu bhool gayi')
+        .replace(/\bstarfruit tha na tu\b/gi, 'starfruit tha na wo')
+        .replace(/\bgunda mat wala baat\b/gi, 'aisi baat')
+        .replace(/\bzindagi ki dhun mein reh\b/gi, 'apne me khush reh')
+        .replace(/\bzindagi ki dhun me reh\b/gi, 'apne me khush reh')
+        .replace(/\bfresh karti hai\b/gi, 'shuru karti hai');
     }
 
     const totalMs = Date.now() - t0;
