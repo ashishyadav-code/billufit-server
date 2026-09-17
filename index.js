@@ -658,7 +658,8 @@ ${memoryBlock}`;
               messages,
               temperature: 0.65,
               presence_penalty: 0.3,
-              max_tokens: 200
+              max_tokens: 350,
+              reasoning_format: 'hidden'
             })
           });
 
