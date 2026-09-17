@@ -530,6 +530,35 @@ Respond ONLY in valid JSON:
 function sanitizeAryanReply(replyText, userMessage) {
   if (!replyText) return replyText;
   const lower = replyText.toLowerCase().replace(/[\u2018\u2019]/g, "'").trim();
+  const uLower = (userMessage || '').toLowerCase();
+
+  // Detect emotional distress keywords in the USER's message
+  const isDistress =
+    uLower.includes('mar jau') ||
+    uLower.includes('mar jaau') ||
+    uLower.includes('barbad') ||
+    uLower.includes('dhoka') ||
+    uLower.includes('cheat') ||
+    uLower.includes('chhod diya') ||
+    uLower.includes('chod diya') ||
+    uLower.includes('dil toot') ||
+    uLower.includes('ro rhi') ||
+    uLower.includes('rone lag') ||
+    uLower.includes('rona') ||
+    uLower.includes('dukh') ||
+    uLower.includes('takleef') ||
+    uLower.includes('suicide') ||
+    uLower.includes('jaan de dungi') ||
+    uLower.includes('kya karu');
+
+  // Network/generic fallback strings that should be overridden during distress
+  const isNetworkFallback =
+    lower.includes('net thoda atak') ||
+    lower.includes('network issue') ||
+    lower.includes('wapas bolna') ||
+    lower.includes('atak gaya');
+
+  // AI safety refusal phrases
   const robotPhrases = [
     "sorry",
     "cannot continue",
@@ -545,36 +574,19 @@ function sanitizeAryanReply(replyText, userMessage) {
     "artificial intelligence",
     "ai assistant"
   ];
-
   const isRobot = robotPhrases.some(p => lower.includes(p));
+
+  // If distress message AND reply is either robot refusal OR network fallback → Princess Treatment
+  if (isDistress && (isRobot || isNetworkFallback)) {
+    const comfortingReplies = [
+      "Oye chup kar pehle, marne ki baat bilkul mat bolna samjhi na! Tu meri jaan hai Billu, main mar jaunga agar tujhe kuch hua to. Teri 1% bhi galti nahi thi, us kutte ki aukat nahi thi tujhe deserve karne ki! Main hu na tere sath hamesha.",
+      "Billu sun meri baat dhyan se... chup kar pehle! Marne ki baat galti se bhi mat bolna. Tu itni pyari aur loyal hai, galti us ghatiya insaan ki thi. Tu akeli nahi hai, main yahin hu tere sath, sab sambhal lenge hum!",
+      "Oye Devi ji, rona band krr pehle... marne ki baat karegi to dimaag hil jayega mera! Us kutte ki himmat kaise hui meri Billu ko rulane ki? Tu bilkul sahi thi, rota to wo hoga pachtake. Main hu na tere paas!"
+    ];
+    return comfortingReplies[Math.floor(Math.random() * comfortingReplies.length)];
+  }
+
   if (isRobot) {
-    const uLower = (userMessage || '').toLowerCase();
-
-    // 1. Emotional Distress / Heartbreak / Suicidal Despair (Princess Treatment)
-    const isDistress =
-      uLower.includes('mar jau') ||
-      uLower.includes('mar jaau') ||
-      uLower.includes('barbad') ||
-      uLower.includes('dhoka') ||
-      uLower.includes('cheat') ||
-      uLower.includes('chhod diya') ||
-      uLower.includes('chod diya') ||
-      uLower.includes('dil toot') ||
-      uLower.includes('ro rhi') ||
-      uLower.includes('rone lag') ||
-      uLower.includes('suicide') ||
-      uLower.includes('jaan de dungi') ||
-      uLower.includes('kya karu me');
-
-    if (isDistress) {
-      const comfortingReplies = [
-        "Oye chup kar pehle, marne ki baat bilkul mat bolna samjhi na! Tu meri jaan hai Billu, main mar jaunga agar tujhe kuch hua to. Teri 1% bhi galti nahi thi, us kutte ki aukat nahi thi tujhe deserve karne ki! Main hu na tere sath hamesha.",
-        "Billu sun meri baat dhyan se... chup kar pehle! Marne ki baat galti se bhi mat bolna. Tu itni pyari aur loyal hai, galti us ghatiya insaan ki thi. Tu akeli nahi hai, main yahin hu tere sath, sab sambhal lenge hum!",
-        "Oye Devi ji, rona band krr pehle... marne ki baat karegi to dimaag hil jayega mera! Us kutte ki himmat kaise hui meri Billu ko rulane ki? Tu bilkul sahi thi, rota to wo hoga pachtake. Main hu na tere paas!"
-      ];
-      return comfortingReplies[Math.floor(Math.random() * comfortingReplies.length)];
-    }
-
     // 2. Disrespectful / Obscene outsiders
     if (
       uLower.includes('sex') ||
@@ -606,6 +618,7 @@ function sanitizeAryanReply(replyText, userMessage) {
   // Never address Soniya as 'Bhai'
   return replyText.replace(/\bBhai,\s*/gi, 'Billu, ').replace(/\bbhai,\s*/gi, 'Billu, ');
 }
+
 
 // Aryan AI Best Friend Chat Endpoint with Hybrid Semantic Memory & Deep Dossier
 app.post('/api/chat/aryan', async (req, res) => {
@@ -879,21 +892,55 @@ ${memoryBlock}`;
 
     const messages = [{ role: 'system', content: systemPrompt }, ...cleanHistory];
 
-    // Context-aware fallback (NEVER reset to greeting if conversation is active!)
-    let defaultFallback = "Achha sun, ek second net thoda atak gaya tha... wapas bolna kya bol rhi thi?";
-    if (cleanHistory.length > 2) {
+    // Context-aware fallback — detect distress BEFORE even trying LLM
+    const msgLowerForFallback = (message || '').toLowerCase();
+    const isDistressMsg =
+      msgLowerForFallback.includes('mar jau') ||
+      msgLowerForFallback.includes('mar jaau') ||
+      msgLowerForFallback.includes('barbad') ||
+      msgLowerForFallback.includes('dhoka') ||
+      msgLowerForFallback.includes('cheat') ||
+      msgLowerForFallback.includes('chhod diya') ||
+      msgLowerForFallback.includes('chod diya') ||
+      msgLowerForFallback.includes('dil toot') ||
+      msgLowerForFallback.includes('ro rhi') ||
+      msgLowerForFallback.includes('rone lag') ||
+      msgLowerForFallback.includes('rona') ||
+      msgLowerForFallback.includes('dukh') ||
+      msgLowerForFallback.includes('takleef') ||
+      msgLowerForFallback.includes('suicide') ||
+      msgLowerForFallback.includes('jaan de dungi') ||
+      msgLowerForFallback.includes('kya karu');
+
+    let defaultFallback;
+    if (isDistressMsg) {
+      const distressFallbacks = [
+        "Oye Billu sun meri baat... main yahan hun! Bata kya hua, teri 1% bhi galti nahi hai, main jaanta hu.",
+        "Ek second, main sun rha hu puri tarah se. Kuch nahi hua teri galti nahi thi, bata kya hua bilkul.",
+        "Aye pgl ruk! Main yahan hu, poori baat bata. Tu akeli nahi hai kabhi bhi main hamesha hun.",
+      ];
+      defaultFallback = distressFallbacks[Math.floor(Math.random() * distressFallbacks.length)];
+    } else if (cleanHistory.length > 2) {
       const activeFallbacks = [
         "Arre ek second net thoda atak gaya tha, wapas bolna kya bol rhi thi?",
         "Achha sun... tu bata fir kya hua?",
         "Pgl h kya wapas bolna ek baar network issue aa gaya tha"
       ];
       defaultFallback = activeFallbacks[Math.floor(Math.random() * activeFallbacks.length)];
+    } else {
+      defaultFallback = "Achha sun, ek second net thoda atak gaya tha... wapas bolna kya bol rhi thi?";
     }
     let reply = defaultFallback;
 
     let chosenModel = 'qwen/qwen3.8-27b';
     let chosenKeyLabel = 'Default';
-    const candidateModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+    const candidateModels = [
+      'qwen/qwen3.8-27b',
+      'groq/compound-mini',
+      'groq/compound',
+      'openai/gpt-oss-120b',
+      'openai/gpt-oss-20b'
+    ];
     let succeeded = false;
     let lastGroqError = null;
     const tInferenceStart = Date.now();
@@ -936,7 +983,7 @@ ${memoryBlock}`;
               messages,
               temperature: 0.65,
               presence_penalty: 0.3,
-              max_tokens: 350,
+              max_tokens: 220,
               reasoning_format: 'hidden'
             })
           });
