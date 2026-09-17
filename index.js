@@ -423,7 +423,16 @@ app.post('/api/chat/aryan', async (req, res) => {
       })).filter(item => item.score >= 1.0);
 
       scored.sort((a, b) => b.score - a.score);
-      matchedMemories = scored.slice(0, 5).map(item => item.doc.fact);
+      const uniqueFacts = [];
+      const seenFacts = new Set();
+      for (const item of scored) {
+        if (!seenFacts.has(item.doc.fact)) {
+          seenFacts.add(item.doc.fact);
+          uniqueFacts.push(item.doc.fact);
+        }
+        if (uniqueFacts.length >= 4) break;
+      }
+      matchedMemories = uniqueFacts;
     }
 
     // Step 2: Build Memory Context
