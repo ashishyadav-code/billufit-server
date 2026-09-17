@@ -366,34 +366,74 @@ async function refreshApiKeysCache() {
   }
 }
 
-// Mark key as exhausted in DB and cache (prevents next messages from retrying it!)
-async function markKeyExhausted(keyId, reason) {
+// Mark key as exhausted for a specific model (per-model, not global!)
+// e.g. qwen 429 does NOT block compound-mini on same key
+async function markKeyExhausted(keyId, reason, modelName) {
   if (!apiKeysCollection || !keyId) return;
   try {
     const exhaustedUntil = new Date(Date.now() + 18 * 3600 * 1000); // 18-hour cooldown
+    const modelField = modelName ? `exhaustedModels.${modelName.replace(/[/.]/g, '_')}` : null;
+
+    const updateFields = {
+      lastExhaustedReason: reason ? reason.substring(0, 150) : 'Rate limit exceeded',
+      lastUsedAt: new Date()
+    };
+    // Track per-model if modelName given, also track global status if NO active models remain
+    if (modelField) {
+      updateFields[modelField] = exhaustedUntil;
+    } else {
+      // Legacy: global exhaustion
+      updateFields.status = 'exhausted';
+      updateFields.exhaustedUntil = exhaustedUntil;
+    }
+
     await apiKeysCollection.updateOne(
       { _id: new ObjectId(keyId) },
-      {
-        $set: {
-          status: 'exhausted',
-          exhaustedUntil,
-          lastExhaustedReason: reason ? reason.substring(0, 150) : 'Rate limit exceeded',
-          lastUsedAt: new Date()
-        },
-        $inc: { failCount: 1 }
-      }
+      { $set: updateFields, $inc: { failCount: 1 } }
     );
+
     const found = cachedApiKeys.find(k => k._id && k._id.toString() === keyId.toString());
     if (found) {
-      found.status = 'exhausted';
-      found.exhaustedUntil = exhaustedUntil;
+      if (!found.exhaustedModels) found.exhaustedModels = {};
+      if (modelName) {
+        found.exhaustedModels[modelName.replace(/[/.]/g, '_')] = exhaustedUntil;
+      } else {
+        found.status = 'exhausted';
+        found.exhaustedUntil = exhaustedUntil;
+      }
       found.failCount = (found.failCount || 0) + 1;
     }
-    console.log(`⚠️ [API Key Exhausted] Key ${keyId} marked EXHAUSTED until ${exhaustedUntil.toISOString()}`);
+    const logMsg = modelName ? `model ${modelName}` : 'globally';
+    console.log(`⚠️ [API Key ${logMsg} Exhausted] Key ${keyId} blocked for ${logMsg} until ${exhaustedUntil.toISOString()}`);
   } catch (err) {
     console.warn('Failed to mark key exhausted:', err.message);
   }
 }
+
+// Check if a specific key is exhausted for a specific model
+function isKeyExhaustedForModel(keyDoc, modelName) {
+  const nowTime = Date.now();
+  // Global exhaustion check (legacy keys)
+  if (keyDoc.status === 'exhausted' && keyDoc.exhaustedUntil) {
+    if (new Date(keyDoc.exhaustedUntil).getTime() > nowTime) {
+      // Global exhausted — but only block if no per-model tracking exists
+      if (!keyDoc.exhaustedModels || Object.keys(keyDoc.exhaustedModels).length === 0) {
+        return true;
+      }
+    }
+  }
+  // Per-model exhaustion check
+  if (keyDoc.exhaustedModels && modelName) {
+    const modelKey = modelName.replace(/[/.]/g, '_');
+    const modelExhUntil = keyDoc.exhaustedModels[modelKey];
+    if (modelExhUntil && new Date(modelExhUntil).getTime() > nowTime) {
+      return true;
+    }
+  }
+  return false;
+}
+
+
 
 // Hybrid Semantic Memory Scoring Function
 function computeHybridScore(query, mem) {
@@ -529,7 +569,7 @@ Respond ONLY in valid JSON (no code fences, no explanation):
               break;
             }
           } else if (groqRes.status === 429 && keyDoc._id) {
-            markKeyExhausted(keyDoc._id, 'extractor 429');
+            markKeyExhausted(keyDoc._id, 'extractor 429', modelName);
           }
         } catch (e) {
           console.warn(`[Extractor ${modelName}]:`, e.message);
@@ -1003,30 +1043,20 @@ ${memoryBlock}`;
     let lastGroqError = null;
     const tInferenceStart = Date.now();
 
-    // Smart Key Selection: filter out any keys marked exhausted unless cooldown expired
-    const nowTime = Date.now();
-    let usableKeyDocs = cachedApiKeys.filter(k => {
-      if (k.status !== 'exhausted') return true;
-      if (k.exhaustedUntil && new Date(k.exhaustedUntil).getTime() < nowTime) {
-        k.status = 'active'; // Auto-revive after cooldown
-        return true;
-      }
-      return false;
-    });
-
-    if (usableKeyDocs.length === 0 && cachedApiKeys.length > 0) {
-      // Emergency fallback: if all keys were exhausted, attempt with all keys
-      usableKeyDocs = cachedApiKeys;
-    }
-
-    if (usableKeyDocs.length === 0) {
-      usableKeyDocs = DEFAULT_GROQ_KEYS;
+    // Key selection is now per-model (inside the loop via isKeyExhaustedForModel)
+    // so a key 429'd on qwen can still be used for groq/compound-mini etc.
+    if (cachedApiKeys.length === 0) {
+      cachedApiKeys = [...DEFAULT_GROQ_KEYS];
     }
 
     for (const modelName of candidateModels) {
       if (succeeded) break;
-      for (let i = 0; i < usableKeyDocs.length; i++) {
-        const keyDoc = usableKeyDocs[(activeKeyIdx + i) % usableKeyDocs.length];
+      // For each model, select keys that are NOT exhausted for THIS specific model
+      const modelUsableKeys = cachedApiKeys.filter(k => !isKeyExhaustedForModel(k, modelName));
+      const keysForThisModel = modelUsableKeys.length > 0 ? modelUsableKeys : cachedApiKeys;
+
+      for (let i = 0; i < keysForThisModel.length; i++) {
+        const keyDoc = keysForThisModel[(activeKeyIdx + i) % keysForThisModel.length];
         const apiKey = keyDoc.key;
         try {
           const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -1052,9 +1082,9 @@ ${memoryBlock}`;
             if (candidateContent && candidateContent.length >= 4) {
               reply = candidateContent;
               chosenModel = modelName;
-              chosenKeyLabel = keyDoc.label || `Key #${(activeKeyIdx + i) % usableKeyDocs.length + 1}`;
+              chosenKeyLabel = keyDoc.label || `Key #${(activeKeyIdx + i) % keysForThisModel.length + 1}`;
               succeeded = true;
-              activeKeyIdx = (activeKeyIdx + i) % usableKeyDocs.length;
+              activeKeyIdx = (activeKeyIdx + i) % keysForThisModel.length;
               break;
             }
           } else {
@@ -1062,10 +1092,9 @@ ${memoryBlock}`;
             lastGroqError = `${modelName} [${keyDoc.label || 'Key'}] status ${groqRes.status}: ${errText.substring(0, 100)}`;
             console.warn(`[Groq ${modelName} ${keyDoc.label || 'Key'} status ${groqRes.status}]:`, errText.substring(0, 100));
 
-            // CRITICAL SMART RULE: If 429 rate limit hit, mark key EXHAUSTED in DB!
-            // Subsequent messages will NOT try this dead key!
+            // Per-model exhaustion: 429 on qwen does NOT block compound-mini on same key
             if (groqRes.status === 429 && keyDoc._id) {
-              markKeyExhausted(keyDoc._id, errText);
+              markKeyExhausted(keyDoc._id, errText, modelName);
             }
           }
         } catch (e) {
