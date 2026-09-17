@@ -625,6 +625,8 @@ ${memoryBlock}`;
     let reply = defaultFallback;
 
     let chosenModel = 'qwen/qwen3.8-27b';
+    const candidateModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+    let succeeded = false;
     const tInferenceStart = Date.now();
 
     for (let i = 0; i < GROQ_KEYS.length && !succeeded; i++) {
