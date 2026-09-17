@@ -638,6 +638,7 @@ ${memoryBlock}`;
     let chosenModel = 'qwen/qwen3.8-27b';
     const candidateModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
     let succeeded = false;
+    let lastGroqError = null;
     const tInferenceStart = Date.now();
 
     for (const modelName of candidateModels) {
@@ -673,9 +674,11 @@ ${memoryBlock}`;
             }
           } else {
             const errText = await groqRes.text();
+            lastGroqError = `${modelName} key${i} (${groqRes.status}): ${errText.substring(0, 100)}`;
             console.warn(`[Groq ${modelName} key ${i} status ${groqRes.status}]:`, errText.substring(0, 100));
           }
         } catch (e) {
+          lastGroqError = `${modelName} key${i} exc: ${e.message}`;
           console.warn(`[Groq fetch exception for ${modelName} key ${i}]:`, e.message);
         }
       }
@@ -720,10 +723,13 @@ ${memoryBlock}`;
     const inferenceMs = tInferenceEnd - tInferenceStart;
 
     const telemetry = {
-      model: chosenModel,
+      model: succeeded ? chosenModel : 'Fallback',
+      succeeded,
       totalMs,
       dbRecallMs,
       inferenceMs,
+      keysCount: GROQ_KEYS.length,
+      lastError: succeeded ? null : lastGroqError,
       steps: [
         { id: 1, name: "1. Intent & Input Tokenizer", status: "Done", durationMs: Math.max(1, tDbStart - t0) },
         { id: 2, name: "2. MongoDB Atlas Memory Recall", status: "Done", durationMs: Math.max(10, Math.floor(dbRecallMs * 0.4)), details: `${matchedMemories.length} facts matched` },
