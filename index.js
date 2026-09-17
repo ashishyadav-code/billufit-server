@@ -1012,11 +1012,11 @@ ${memoryBlock}`;
     }
     let reply = defaultFallback;
 
-    let chosenModel = 'openai/gpt-oss-120b';
+    let chosenModel = 'qwen/qwen3.8-27b';
     let chosenKeyLabel = 'Default';
     const candidateModels = [
-      'openai/gpt-oss-120b',  // 1st Priority (Deep intelligence & reasoning)
-      'qwen/qwen3.8-27b',     // 2nd Priority (Authentic WhatsApp Hindi slang)
+      'qwen/qwen3.8-27b',     // 1st Priority (Authentic WhatsApp Hindi slang & warmth)
+      'openai/gpt-oss-120b',  // 2nd Priority (Deep intelligence & reasoning)
       'groq/compound-mini',   // 3rd Priority (High-speed backup)
       'openai/gpt-oss-20b'    // 4th Priority (Emergency backup)
     ];
