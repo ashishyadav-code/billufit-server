@@ -490,18 +490,15 @@ Respond ONLY in valid JSON:
 
 function sanitizeAryanReply(replyText, userMessage) {
   if (!replyText) return replyText;
-  const lower = replyText.toLowerCase().trim();
+  const lower = replyText.toLowerCase().replace(/[\u2018\u2019]/g, "'").trim();
   const robotPhrases = [
-    "i'm sorry, but i can't",
-    "i'm sorry, but i cannot",
-    "i'm sorry, i can't",
-    "i'm sorry, i cannot",
-    "i cannot continue this conversation",
-    "i can't continue this conversation",
-    "i cannot help with that",
-    "i can't help with that",
-    "i cannot assist with that",
-    "i can't assist with that",
+    "sorry",
+    "cannot continue",
+    "can't continue",
+    "cannot help",
+    "can't help",
+    "cannot assist",
+    "can't assist",
     "as an ai",
     "i am an ai",
     "language model",
