@@ -928,9 +928,38 @@ app.post('/api/chat/aryan', async (req, res) => {
       });
     }
     const activeProfile = profile || userDoc || {};
-    const displayName = activeProfile.preferredName || activeProfile.name || userDoc?.preferredName || userDoc?.name || (isSoniya ? 'Soniya' : (cleanUser !== 'guest' ? username : 'Bhai'));
+    let displayName = activeProfile.preferredName || activeProfile.name || userDoc?.preferredName || userDoc?.name || (isSoniya ? 'Soniya' : (cleanUser !== 'guest' ? username : 'Bhai'));
     const gender = activeProfile.gender || userDoc?.gender || (isSoniya ? 'female' : 'male');
     const isMale = gender === 'male';
+
+    // Fast name declaration check (Ensure permanent memory & immediate addressing)
+    const nameIntent = message.match(/(?:mera\s+naam|mera\s+name|main\s+hoon|main\s+hu|call\s+me|mujhe)\s+([a-zA-Z]+)(?:\s+hai|\s+he|\s+bulana|\s+bolo|\s+bola\s+kar|\s+kahke\s+bolna|\s+kehna)?/i)
+      || message.match(/aage\s+se\s+([a-zA-Z]+)\s+(?:kahke|bolna|bulana)/i);
+    if (nameIntent && nameIntent[1]) {
+      const forbidden = ['bhai', 'bro', 'yaar', 'yrr', 'hai', 'he', 'mera', 'naam', 'name', 'bol', 'kya', 'mere', 'address', 'mujhe', 'pussy', 'cat'];
+      const rawDeclared = nameIntent[1].trim();
+      if (!forbidden.includes(rawDeclared.toLowerCase()) && rawDeclared.length >= 2) {
+        const capName = rawDeclared.charAt(0).toUpperCase() + rawDeclared.slice(1).toLowerCase();
+        displayName = capName;
+        if (usersCollection) {
+          usersCollection.updateOne(
+            { username: cleanUser },
+            { $set: { preferredName: capName, name: capName } }
+          ).catch(() => {});
+        }
+        if (memoriesCollection) {
+          memoriesCollection.insertOne({
+            username: cleanUser,
+            fact: `User's real/preferred name is ${capName}. Must always address user as ${capName}.`,
+            category: 'identity',
+            keywords: ['name', 'nickname', 'preferred_name', 'identity'],
+            importance: 1.0,
+            sourceMessage: message,
+            createdAt: new Date()
+          }).catch(() => {});
+        }
+      }
+    }
 
     const targetNames = isSoniya 
       ? ['soniya', 'soniya123', '@soniya123', cleanUser] 
@@ -1172,6 +1201,11 @@ IDENTITY & DIRECTIVES (CRITICAL):
      * e.g. "Kya main aaj ka lunch/dinner meal log kar du tere liye?", "Bata kitne ande ya kitna paneer khaya, abhi add kar deta hu!", "Kya kal ke workout ka schedule (Chest/Triceps) plan kar du?", "Water intake target badhana hai kya?"
    - Make ${displayName} feel supported, motivated, and engaged!
 6. Tone: Energetic, brotherly (desi gym bro), knowledgeable, conversational Hinglish (2-4 natural lines).
+7. 🛡️ TOPIC FOCUS FOR BILLUFIT:
+   - You are Aryan, the dedicated fitness, nutrition & health companion inside BilluFit.
+   - If ${displayName} asks about completely unrelated non-health topics (e.g. coding, politics, movie reviews, history essays):
+     Gently steer them back in a friendly desi style: "Bhai main BilluFit pe aapka fitness aur diet coach hu! Health, diet, workout ya calorie tracking ke baare me pucho toh best guide karunga. Bata aaj fitness me kya help chahiye?"
+     (Do not be robotic or overly strict—friendly casual chit-chat and greetings are always fine).
 ${memoryBlock}`;
 
     const systemPrompt = isSoniya ? soniyaPrompt : regularUserPrompt;
