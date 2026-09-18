@@ -255,18 +255,29 @@ app.put('/api/user/:username/profile', async (req, res) => {
   }
 });
 
+function getUsernameAliases(raw) {
+  const clean = (raw || '').trim().toLowerCase().replace(/^@/, '');
+  if (clean === 'soniya' || clean === 'soniyaaa') {
+    return ['soniya', 'soniyaaa'];
+  }
+  return [clean];
+}
+
 // Sync Meals & AI Memory
 app.post('/api/user/:username/sync', async (req, res) => {
   try {
-    const cleanUsername = req.params.username.trim().toLowerCase();
+    const rawUsername = req.params.username.trim().toLowerCase();
+    const aliases = getUsernameAliases(rawUsername);
     const { meals, memory, profileUpdates } = req.body;
 
-    if (meals && mealsCollection) {
-      await mealsCollection.updateOne(
-        { username: cleanUsername },
-        { $set: { meals, updatedAt: new Date() } },
-        { upsert: true }
-      );
+    for (const targetUser of aliases) {
+      if (meals && mealsCollection) {
+        await mealsCollection.updateOne(
+          { username: targetUser },
+          { $set: { meals, updatedAt: new Date() } },
+          { upsert: true }
+        );
+      }
     }
 
     if (memory && memoryCollection) {
@@ -275,7 +286,7 @@ app.post('/api/user/:username/sync', async (req, res) => {
 
       // Multi-device message merge: don't lose messages sent from another phone
       try {
-        const existingDoc = await memoryCollection.findOne({ username: cleanUsername });
+        const existingDoc = await memoryCollection.findOne({ username: { $in: aliases } });
         if (existingDoc && Array.isArray(existingDoc.messages) && existingDoc.messages.length > 0) {
           const existingMap = new Map();
           existingDoc.messages.forEach(m => {
@@ -300,18 +311,21 @@ app.post('/api/user/:username/sync', async (req, res) => {
         console.warn('Memory merge note:', mergeErr.message);
       }
 
-      await memoryCollection.updateOne(
-        { username: cleanUsername },
-        { 
-          $set: { 
-            ...memory, 
-            messages: finalMessages, 
-            longTermNotes: finalNotes,
-            updatedAt: new Date() 
-          } 
-        },
-        { upsert: true }
-      );
+      for (const targetUser of aliases) {
+        await memoryCollection.updateOne(
+          { username: targetUser },
+          { 
+            $set: { 
+              ...memory, 
+              username: targetUser,
+              messages: finalMessages, 
+              longTermNotes: finalNotes,
+              updatedAt: new Date() 
+            } 
+          },
+          { upsert: true }
+        );
+      }
     }
 
     if (profileUpdates && usersCollection) {
@@ -331,7 +345,7 @@ app.post('/api/user/:username/sync', async (req, res) => {
       if (profileUpdates.goal) updates.fitnessGoal = profileUpdates.goal;
 
       await usersCollection.updateOne(
-        { $or: [{ username: cleanUsername }, { userId: cleanUsername }, { name: cleanUsername }] },
+        { $or: [{ username: { $in: aliases } }, { userId: { $in: aliases } }, { name: { $in: aliases } }] },
         { $set: updates }
       );
     }
@@ -345,10 +359,16 @@ app.post('/api/user/:username/sync', async (req, res) => {
 // Get Synced AI Chat & Memory for Multi-Device Universal Sync
 app.get('/api/user/:username/chat', async (req, res) => {
   try {
-    const cleanUsername = req.params.username.trim().toLowerCase();
+    const rawUsername = req.params.username.trim().toLowerCase();
+    const aliases = getUsernameAliases(rawUsername);
     if (!memoryCollection) return res.json({ success: true, messages: [], longTermNotes: [] });
 
-    const memDoc = await memoryCollection.findOne({ username: cleanUsername });
+    const docs = await memoryCollection.find({ username: { $in: aliases } }).toArray();
+    let memDoc = null;
+    if (docs.length > 0) {
+      docs.sort((a, b) => ((b.messages || []).length - (a.messages || []).length));
+      memDoc = docs[0];
+    }
     if (!memDoc) {
       return res.json({ success: true, messages: [], longTermNotes: [], sessionStartTime: Date.now() });
     }
