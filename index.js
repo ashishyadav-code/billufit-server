@@ -270,9 +270,46 @@ app.post('/api/user/:username/sync', async (req, res) => {
     }
 
     if (memory && memoryCollection) {
+      let finalMessages = memory.messages || [];
+      let finalNotes = memory.longTermNotes || [];
+
+      // Multi-device message merge: don't lose messages sent from another phone
+      try {
+        const existingDoc = await memoryCollection.findOne({ username: cleanUsername });
+        if (existingDoc && Array.isArray(existingDoc.messages) && existingDoc.messages.length > 0) {
+          const existingMap = new Map();
+          existingDoc.messages.forEach(m => {
+            const key = m.id || `${m.timestamp}_${m.text}`;
+            existingMap.set(key, m);
+          });
+          finalMessages.forEach(m => {
+            const key = m.id || `${m.timestamp}_${m.text}`;
+            existingMap.set(key, m);
+          });
+          finalMessages = Array.from(existingMap.values());
+          if (finalMessages.length > 80) {
+            finalMessages = finalMessages.slice(finalMessages.length - 80);
+          }
+
+          if (Array.isArray(existingDoc.longTermNotes)) {
+            const notesSet = new Set([...existingDoc.longTermNotes, ...finalNotes]);
+            finalNotes = Array.from(notesSet).slice(-30);
+          }
+        }
+      } catch (mergeErr) {
+        console.warn('Memory merge note:', mergeErr.message);
+      }
+
       await memoryCollection.updateOne(
         { username: cleanUsername },
-        { $set: { ...memory, updatedAt: new Date() } },
+        { 
+          $set: { 
+            ...memory, 
+            messages: finalMessages, 
+            longTermNotes: finalNotes,
+            updatedAt: new Date() 
+          } 
+        },
         { upsert: true }
       );
     }
@@ -302,6 +339,29 @@ app.post('/api/user/:username/sync', async (req, res) => {
     res.json({ success: true, timestamp: Date.now() });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Synced AI Chat & Memory for Multi-Device Universal Sync
+app.get('/api/user/:username/chat', async (req, res) => {
+  try {
+    const cleanUsername = req.params.username.trim().toLowerCase();
+    if (!memoryCollection) return res.json({ success: true, messages: [], longTermNotes: [] });
+
+    const memDoc = await memoryCollection.findOne({ username: cleanUsername });
+    if (!memDoc) {
+      return res.json({ success: true, messages: [], longTermNotes: [], sessionStartTime: Date.now() });
+    }
+
+    res.json({
+      success: true,
+      messages: memDoc.messages || [],
+      longTermNotes: memDoc.longTermNotes || [],
+      sessionStartTime: memDoc.sessionStartTime || Date.now(),
+      updatedAt: memDoc.updatedAt,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message, messages: [], longTermNotes: [] });
   }
 });
 
@@ -2099,17 +2159,33 @@ app.get('/api/notifications/:username', async (req, res) => {
 
     const userDisplayName = user?.name || cleanUsername;
 
+    const targetVariants = [
+      'all',
+      '@all',
+      cleanUsername,
+      `@${cleanUsername}`,
+    ];
+    if (user) {
+      if (user.name) {
+        const cn = user.name.trim().toLowerCase();
+        targetVariants.push(cn, `@${cn}`);
+      }
+      if (user.userId) {
+        const ci = user.userId.trim().toLowerCase();
+        targetVariants.push(ci, `@${ci}`);
+      }
+      if (user.username) {
+        const cu = user.username.trim().toLowerCase();
+        targetVariants.push(cu, `@${cu}`);
+      }
+    }
+    const targetRegexes = Array.from(new Set(targetVariants)).map(v => new RegExp(`^${v.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')}$`, 'i'));
+
     const unread = await notificationsCollection
       .find({
         $and: [
-          {
-            $or: [
-              { target: 'all' },
-              { target: `@${cleanUsername}` },
-              { target: cleanUsername },
-            ],
-          },
-          { readBy: { $ne: cleanUsername } },
+          { target: { $in: targetRegexes } },
+          { readBy: { $nin: [cleanUsername, user?.username?.toLowerCase()].filter(Boolean) } },
         ],
       })
       .sort({ createdAt: -1 })
