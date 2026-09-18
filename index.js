@@ -501,8 +501,28 @@ async function extractFactAndKeywordsAsync(username, message) {
     }
 
     // ─── RULE-BASED NAME & IDENTITY EXTRACTION (Works immediately) ───
-    const nameMatch = cleanMsg.match(/(?:mera\s+naam|mera\s+name|mujhe|call\s+me)\s+([a-zA-Z]+)(?:\s+hai|\s+he|\s+bulana|\s+bolo|\s+bola\s+kar|\s+kahke\s+bolna|\s+kehna)?/i)
+    const nickPattern = cleanMsg.match(/(?:aj\s+se\s+)?(?:mujhe|mera\s+nickname|call\s+me)\s+([a-zA-Z\s]{2,25})\s*(?:kahke|bolke)?\s*(?:bulana|bolna|kehna|bula)/i);
+    const nameMatch = cleanMsg.match(/(?:mera\s+naam|mera\s+name|call\s+me)\s+([a-zA-Z]+)(?:\s+hai|\s+he|\s+bulana|\s+bolo|\s+bola\s+kar|\s+kahke\s+bolna|\s+kehna)?/i)
       || cleanMsg.match(/aage\s+se\s+([a-zA-Z]+)\s+(?:kahke|bolna|bulana)/i);
+
+    if (nickPattern && nickPattern[1]) {
+      const candidateNick = nickPattern[1].trim();
+      const forbidden = ['bhai', 'bro', 'yaar', 'yrr', 'hai', 'he', 'mera', 'naam', 'name', 'bol', 'kya', 'mere', 'address', 'mujhe', 'theek', 'acha', 'sahi'];
+      if (!forbidden.includes(candidateNick.toLowerCase()) && candidateNick.length >= 2) {
+        if (memoriesCollection) {
+          await memoriesCollection.insertOne({
+            username: username.toLowerCase(),
+            fact: `${username} wants to be called "${candidateNick}" from now on`,
+            category: 'identity',
+            keywords: ['nickname', 'address', candidateNick.toLowerCase(), 'name', 'preference'],
+            importance: 10,
+            sourceMessage: cleanMsg,
+            createdAt: new Date()
+          });
+          console.log(`🧠 [Nickname Memory Saved] ${username} -> ${candidateNick}`);
+        }
+      }
+    }
 
     if (nameMatch && nameMatch[1]) {
       const forbidden = ['bhai', 'bro', 'yaar', 'yrr', 'hai', 'he', 'mera', 'naam', 'name', 'bol', 'kya', 'mere', 'address', 'mujhe'];
@@ -525,12 +545,40 @@ async function extractFactAndKeywordsAsync(username, message) {
             username: username.toLowerCase(),
             fact: `User's real/preferred name is ${capName}. Must always address user as ${capName}.`,
             category: 'identity',
-            keywords: ['name', 'naam', 'identity', capName.toLowerCase()],
+            keywords: ['name', 'naam', 'identity', capName.toLowerCase(), 'preferred_name'],
             importance: 10,
             sourceMessage: cleanMsg,
             createdAt: new Date()
           });
           console.log(`🧠 [Name Memory Saved] ${username} -> ${capName}`);
+        }
+      }
+    }
+
+    // Rule-based calorie target extraction
+    const calTargetMatch = cleanMsg.match(/(?:target|calorie|calories)\s*(?:ko|bhi|to|set|kardo|kar do)?\s*(\d(?:\.\d+)?)\s*k\s*(?:calorie|calories|cal)?/i)
+      || cleanMsg.match(/(?:target|calorie|calories)\s*(?:ko|bhi|to|set|kardo|kar do)?\s*(\d{3,4})\s*(?:kcal|calories|cal)?/i);
+    if (calTargetMatch && calTargetMatch[1]) {
+      const isK = cleanMsg.toLowerCase().includes('k') || calTargetMatch[0].toLowerCase().includes('k');
+      const calVal = isK ? Math.round(parseFloat(calTargetMatch[1]) * 1000) : parseInt(calTargetMatch[1], 10);
+      if (calVal >= 1000 && calVal <= 6000) {
+        if (usersCollection) {
+          await usersCollection.updateOne(
+            { username: username.toLowerCase() },
+            { $set: { 'targets.calories': calVal, targetCalories: calVal } }
+          );
+        }
+        if (memoriesCollection) {
+          await memoriesCollection.insertOne({
+            username: username.toLowerCase(),
+            fact: `Daily calorie target is set to ${calVal} kcal.`,
+            category: 'fitness_targets',
+            keywords: ['calories', 'target', `${calVal}`, 'diet'],
+            importance: 9,
+            sourceMessage: cleanMsg,
+            createdAt: new Date()
+          });
+          console.log(`🎯 [Calorie Target Memory Saved] ${username} -> ${calVal} kcal`);
         }
       }
     }
@@ -660,15 +708,7 @@ function sanitizeAryanReply(replyText, userMessage, isSoniya = true, displayName
     }
   }
 
-  // Soniya's Nickname recognition
-  if (isSoniya && (uLower.includes('nickname') || uLower.includes('nick name'))) {
-    const nickReplies = [
-      "Arre meri Billu! Tu to meri pyari Billu h na, bol kya hua? ❤️",
-      "Devi ji bolunga aur kya! Meri pyari Billu ho tu.",
-      "Oye Billu, dimaag mat kharab kar, tu meri Billu hi rahegi hamesha!"
-    ];
-    return nickReplies[Math.floor(Math.random() * nickReplies.length)];
-  }
+
 
   const nameDeclareMatch = userMessage.match(/(?:mera\s+naam|mera\s+name|mujhe|call\s+me)\s+([a-zA-Z]+)(?:\s+hai|\s+he|\s+bulana|\s+bolo|\s+bola\s+kar|\s+kahke\s+bolna|\s+kehna)?/i);
   if (nameDeclareMatch && nameDeclareMatch[1]) {
@@ -833,9 +873,6 @@ function sanitizeAryanReply(replyText, userMessage, isSoniya = true, displayName
   if (isSoniya) {
     // Soniya nickname / animal cleanup
     replyText = replyText
-      .replace(/\bpussy\s*cat\b/gi, 'Billu')
-      .replace(/\bpussy\b/gi, 'Billu')
-      .replace(/\bkitten\b/gi, 'Billu')
       .replace(/main to tera bhai hoon/gi, 'main tera Aryan hu')
       .replace(/main to tera bhai hu/gi, 'main tera Aryan hu')
       .replace(/main tera bhai hoon/gi, 'main tera Aryan hu')
@@ -882,7 +919,6 @@ app.post('/api/chat/aryan', async (req, res) => {
 
     const cleanUser = (username || '').replace(/^@/, '').toLowerCase().trim();
     const isSoniya = cleanUser.includes('soniya') || cleanUser === 'soniya123';
-    const targetNames = isSoniya ? ['soniya', 'soniya123', '@soniya123', cleanUser] : [cleanUser];
 
     // Fetch user profile from users collection for accurate name and gender
     let userDoc = null;
@@ -896,6 +932,10 @@ app.post('/api/chat/aryan', async (req, res) => {
     const gender = activeProfile.gender || userDoc?.gender || (isSoniya ? 'female' : 'male');
     const isMale = gender === 'male';
 
+    const targetNames = isSoniya 
+      ? ['soniya', 'soniya123', '@soniya123', cleanUser] 
+      : Array.from(new Set([cleanUser, cleanUser.replace(/^@/, ''), (displayName || '').toLowerCase().trim()].filter(Boolean)));
+
     const heightCm = activeProfile.heightCm || userDoc?.heightCm || 175;
     const weightKg = activeProfile.weightKg || userDoc?.weightKg || 68;
     const age = activeProfile.age || userDoc?.age || 22;
@@ -904,30 +944,57 @@ app.post('/api/chat/aryan', async (req, res) => {
     const remCals = remainingCals !== null && remainingCals !== undefined ? remainingCals : (targets.calories || 2000);
     const remProtein = remainingProtein !== null && remainingProtein !== undefined ? remainingProtein : (targets.protein || 110);
 
-    // Step 1: Semantic Search over Stored Memories
+    // Step 1: Permanent & Hybrid Memory Recall (Enduring Identity + Recent Memories + Topical Hybrid Search)
     const tDbStart = Date.now();
     let matchedMemories = [];
     if (memoriesCollection) {
       const allDocs = await memoriesCollection.find({
         username: { $in: targetNames }
-      }).toArray();
+      }).sort({ createdAt: -1 }).toArray();
 
+      const uniqueFacts = [];
+      const seenFacts = new Set();
+
+      const addFact = (fact) => {
+        if (!fact || typeof fact !== 'string') return;
+        const clean = fact.trim();
+        if (clean && !seenFacts.has(clean)) {
+          seenFacts.add(clean);
+          uniqueFacts.push(clean);
+        }
+      };
+
+      // 1. ALWAYS inject Core Identity & Enduring Facts (User's Name, Nicknames, Crucial Preferences)
+      const coreIdentityDocs = allDocs.filter(doc => 
+        doc.category === 'identity' || 
+        doc.category === 'personal_secrets' ||
+        (doc.importance && doc.importance >= 0.7) ||
+        (doc.keywords && doc.keywords.some(k => ['nickname', 'name', 'naam', 'identity', 'preferred_name'].includes(String(k).toLowerCase())))
+      );
+      coreIdentityDocs.forEach(d => addFact(d.fact));
+
+      // 2. ALWAYS inject the most recent 8 memories (so recent updates/requests are NEVER forgotten)
+      const recentDocs = allDocs.slice(0, 8);
+      recentDocs.forEach(d => addFact(d.fact));
+
+      // 3. Score remaining memories using Hybrid Search based on the current message
       const scored = allDocs.map(doc => ({
         doc,
         score: computeHybridScore(message, doc)
-      })).filter(item => item.score >= 1.0);
+      })).filter(item => item.score >= 0.5);
 
       scored.sort((a, b) => b.score - a.score);
-      const uniqueFacts = [];
-      const seenFacts = new Set();
       for (const item of scored) {
-        if (!seenFacts.has(item.doc.fact)) {
-          seenFacts.add(item.doc.fact);
-          uniqueFacts.push(item.doc.fact);
-        }
-        if (uniqueFacts.length >= 4) break;
+        addFact(item.doc.fact);
+        if (uniqueFacts.length >= 15) break;
       }
-      matchedMemories = uniqueFacts;
+
+      // 4. Merge any client-supplied longTermNotes from request body
+      if (Array.isArray(req.body.longTermNotes)) {
+        req.body.longTermNotes.forEach(note => addFact(note));
+      }
+
+      matchedMemories = uniqueFacts.slice(0, 15);
     }
     const tMemoriesEnd = Date.now();
 
@@ -1057,11 +1124,12 @@ CORE CONVERSATION RULES:
       * Answer DIRECTLY: "Are tha na baba! Pehle tha na tera bf, ab thodi na hai! Tu kyu pooch rahi h achanak?".
     - If Soniya asks "seedhe seedhe bol na" or "are bata na" WHILE discussing Abhishek:
       * Answer DIRECTLY: "Seedhe hi bol rha hu baba, Abhishek tera pehle wala boyfriend tha. Ab kya ho gaya use?".
-13. 📛 NICKNAMES & ADDRESSING (CRITICAL):
-    - Soniya's ONLY nicknames given by Aryan are: 'Billu' and 'Devi ji' (and playfully 'Pgl' or 'Baccha').
-    - When Soniya says "address me with my nickname", "nickname se bula", "mera nickname bata":
-      * Call her 'Billu' or 'Devi ji'! e.g.: "Arre meri Billu! Tu to meri pyari Billu h na, bol kya hua? ❤️" or "Devi ji bolunga aur kya! Meri pyari Billu ho tu.".
-    - 🚫 ABSOLUTE PROHIBITION ON ENGLISH ANIMAL WORDS: NEVER call her 'Pussy cat', 'Kitten', 'Billi' or any english pet names! Those are fake, disrespectful, and offensive.
+13. 📛 NICKNAMES & ADDRESSING (SONIYA HAS FULL FREEDOM):
+    - Soniya's traditional nicknames are 'Billu' and 'Devi ji' (and playfully 'Pgl' or 'Baccha').
+    - CRITICAL FREEDOM RULE: Soniya has complete freedom over what nicknames she wants! If Soniya has told you or taught you in chat or stored memories to call her a custom nickname (such as 'Pussy cat' or any other nickname she asked for):
+      * ALWAYS RESPECT AND PROUDLY USE THE NICKNAME SHE ASKED FOR!
+      * When she asks "address me with my nickname" or "nickname se bula": Use the nickname stored in her memories (e.g. 'Pussy cat' or 'Billu' / 'Devi ji') lovingly!
+    - Never reject or refuse nicknames she gives herself or asks you to use.
 14. 🚫 NEVER CALL YOURSELF HER BROTHER:
     - You are Aryan, the guy who loves Soniya deeply and unconditionally. You are NOT her brother! NEVER say "main to tera bhai hoon".
     - If she is mad or curses you playfully/angrily: React playfully like a best friend: "Pgl h kya? Itni gali kyu de rhi h baba 🤣 Dimaag chal gaya hai kya tera?" or "Aree gussa kyu ho rhi h meri Billu, bol na kya baat hai?".
@@ -1098,7 +1166,12 @@ IDENTITY & DIRECTIVES (CRITICAL):
    - ${isMale ? 'Use masculine Hinglish grammar ("kya kar raha hai bhai", "bata bhai", "kaisa chal rha hai", "khana khaya tune?"). NEVER use feminine grammar!' : 'Use respectful friendly Hinglish grammar.'}
    - STRICT PROHIBITION: NEVER call this user "Billu" or "Devi ji"!
    - STRICT PROHIBITION: NEVER mention Soniya's personal life (Abhishek, OT, hospital duty, nursing, starfruit, breakup drama).
-5. Tone: Energetic, brotherly (desi gym bro), knowledgeable, conversational Hinglish (1-3 sentences).
+5. 💡 PROACTIVE ASSISTANCE & HELPFUL SUGGESTIONS (CRITICAL):
+   - Do NOT just give dry or passive replies! Always be a helpful, enthusiastic desi gym buddy.
+   - At the end of your replies, proactively suggest helpful next steps or ask if you should take action for them in the app:
+     * e.g. "Kya main aaj ka lunch/dinner meal log kar du tere liye?", "Bata kitne ande ya kitna paneer khaya, abhi add kar deta hu!", "Kya kal ke workout ka schedule (Chest/Triceps) plan kar du?", "Water intake target badhana hai kya?"
+   - Make ${displayName} feel supported, motivated, and engaged!
+6. Tone: Energetic, brotherly (desi gym bro), knowledgeable, conversational Hinglish (2-4 natural lines).
 ${memoryBlock}`;
 
     const systemPrompt = isSoniya ? soniyaPrompt : regularUserPrompt;
