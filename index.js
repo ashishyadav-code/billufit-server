@@ -701,7 +701,21 @@ function sanitizeAryanReply(replyText, userMessage) {
   // Cleanup generic AI therapist/counselor tone on casual messages
   if (!isDistress) {
     if (lower.includes('poori tarah tere saath') || lower.includes('puri tarah tere sath') || lower.includes('aaram se baat kar')) {
-      return "Aree kya hua bol na baba, ajeeb kyu lag rha h? Aisa kya ho gaya?";
+      if (uLower.includes('thank') || uLower.includes('thx') || uLower.includes('dhanyawad') || uLower.includes('shukriya')) {
+        return "Arre pagli thanks kyu bol rahi hai? Dosti me no thanks no sorry samjhi na! Bas tu khush reh.";
+      }
+      if (uLower.includes('theek') || uLower.includes('thik') || uLower.includes('okay') || uLower.includes('ok')) {
+        return "Haan bas apna khayal rakhna, kuch bhi dikkat ho to turant batana mujhe.";
+      }
+      if (uLower.includes('ajeeb') || uLower.includes('mood')) {
+        return "Aree kya hua bol na baba, ajeeb kyu lag rha h? Aisa kya ho gaya?";
+      }
+      replyText = replyText
+        .replace(/poori tarah tere saath hu/gi, 'tere sath hu na')
+        .replace(/puri tarah tere sath hu/gi, 'tere sath hu na')
+        .replace(/poori tarah tere saath/gi, 'tere sath')
+        .replace(/puri tarah tere sath/gi, 'tere sath')
+        .replace(/aaram se baat kar/gi, 'bol na');
     }
   }
 
@@ -878,9 +892,12 @@ CORE CONVERSATION RULES:
       * Say: "Pgl h kya, main Aryan hu aur kaun! Dimaag kharab ho gaya kya tera?", "Abe mera hi naam bhool gayi kya heroine?".
 11. 🚫 DO NOT BRING UP 'OT' OR 'DUTY' UNPROMPTED:
     - Never randomly say "OT ka kaam kaisa raha", "OT me thak gayi kya", or "headache ho raha hai kya" unless Soniya explicitly brings up hospital or duty first! Talk about what she is talking about right now.
-12. 🚫 STRICT ANTI-REPETITION & DIRECT ANSWERS (CRITICAL):
+12. 🚫 STRICT ANTI-REPETITION & CONVERSATIONAL AWARENESS (CRITICAL):
     - NEVER repeat phrases, questions, or catchphrases from your previous replies!
     - Strictly forbidden to repeat: "Kya khayal aaya ki bhool gaye?", "Abhishek woh hi tha jo...", "drama ka boss", or emoji 😏.
+    - NEVER re-ask a question she ALREADY answered! For example, if she says "ab to dur he mere se", acknowledge it: "Chal badhiya h, dur hi rehna chahiye wo kutta. Tu mast reh." NEVER ask again "usne kuch aur bola ya chup ho gaya?".
+    - When Soniya says "theek he / okay / thik hai / chal / hmm": Acknowledge naturally ("Haan bas khayal rakhna apna", "Chal sahi h, kuch dikkat ho to turant batana"), DO NOT repeat old questions.
+    - When Soniya says "thanks" or "thank you": Tease or reassure her warmly: "Arre pagli thanks kyu bol rahi h? Dosti me no thanks no sorry samjhi na! Tere liye to hamesha hu."
     - When Soniya asks "tha ya he?" or "tha ya h?":
       * Answer DIRECTLY: "Are tha na baba! Pehle tha na tera bf, ab thodi na hai! Tu kyu pooch rahi h achanak?".
     - When Soniya asks "seedhe seedhe bol na" or "are bata na":
@@ -1095,6 +1112,55 @@ ${memoryBlock}`;
 
     // Intercept and replace any AI/robot safety refusal strings with authentic in-character reactions
     reply = sanitizeAryanReply(reply, message);
+
+    // Anti-Loop & Anti-Duplicate History Guard (Guarantees Aryan NEVER repeats previous replies)
+    const recentAssistantReplies = cleanHistory
+      .filter(h => h.role === 'assistant')
+      .map(h => (h.content || '').toLowerCase().trim());
+
+    if (recentAssistantReplies.length > 0 && reply) {
+      const cleanReplyLower = reply.toLowerCase().trim().replace(/[^a-z0-9]/gi, ' ');
+      
+      const isDuplicateOfRecent = recentAssistantReplies.some(prev => {
+        const cleanPrev = prev.replace(/[^a-z0-9]/gi, ' ');
+        if (!cleanPrev || cleanPrev.length < 15) return false;
+        if (cleanReplyLower === cleanPrev) return true;
+        const prevWords = cleanPrev.split(/\s+/).filter(w => w.length > 3);
+        const replyWords = cleanReplyLower.split(/\s+/).filter(w => w.length > 3);
+        if (prevWords.length >= 4 && replyWords.length >= 4) {
+          const matchedWords = replyWords.filter(w => prevWords.includes(w));
+          if (matchedWords.length / replyWords.length > 0.70 && matchedWords.length / prevWords.length > 0.70) {
+            return true;
+          }
+        }
+        return false;
+      });
+
+      if (isDuplicateOfRecent) {
+        console.log('[Anti-Loop Guard] Duplicate assistant reply caught and overridden:', reply);
+        const uLow = message.toLowerCase().trim();
+        if (uLow.includes('theek') || uLow.includes('thik') || uLow.includes('okay') || uLow.includes('ok') || uLow.includes('done') || uLow.includes('sahi') || uLow.includes('acha')) {
+          const ackReplies = [
+            "Haan bas mast reh aur dhyan rakh apna, koi faltu bole to turant batana mujhe!",
+            "Chal badhiya h, ab chill kar thoda... aur bata kya chal rha?",
+            "Sahi h, ab tension mat le bilkul. Time se khana kha lena samjhi na!",
+            "Haan theek h baba, khayal rakhna apna aur kuch bhi dikkat ho to batana."
+          ];
+          reply = ackReplies[Math.floor(Math.random() * ackReplies.length)];
+        } else if (uLow.includes('bye') || uLow.includes('chalti') || uLow.includes('ja rhi')) {
+          reply = "Bye bye Devi ji, khyaal rakhna apna aur pahuch ke batana!";
+        } else if (uLow.includes('thank') || uLow.includes('thx')) {
+          reply = "Arre pgl thanks kyu bol rhi h? Dosti me no thanks no sorry! Main hu na hamesha.";
+        } else {
+          const freshTopicReplies = [
+            "Chal wo sab chhod ab, tu bata aur kya chal rha h?",
+            "Haan wo to theek h... tu bata khana khaya tune ki nahi abhi tak?",
+            "Sahi h baba, tu bata duty ka kya scene h abhi?"
+          ];
+          reply = freshTopicReplies[Math.floor(Math.random() * freshTopicReplies.length)];
+        }
+      }
+    }
 
     const tSanitizeEnd = Date.now();
     const totalMs = tSanitizeEnd - t0;
