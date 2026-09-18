@@ -500,6 +500,41 @@ async function extractFactAndKeywordsAsync(username, message) {
       console.log(`📌 [Rule-Based Persona Updated for ${username}]:`, ruleDoc);
     }
 
+    // ─── RULE-BASED NAME & IDENTITY EXTRACTION (Works immediately) ───
+    const nameMatch = cleanMsg.match(/(?:mera\s+naam|mera\s+name|mujhe|call\s+me)\s+([a-zA-Z]+)(?:\s+hai|\s+he|\s+bulana|\s+bolo|\s+bola\s+kar|\s+kahke\s+bolna|\s+kehna)?/i)
+      || cleanMsg.match(/aage\s+se\s+([a-zA-Z]+)\s+(?:kahke|bolna|bulana)/i);
+
+    if (nameMatch && nameMatch[1]) {
+      const forbidden = ['bhai', 'bro', 'yaar', 'yrr', 'hai', 'he', 'mera', 'naam', 'name', 'bol', 'kya', 'mere', 'address', 'mujhe'];
+      const rawName = nameMatch[1].trim();
+      if (!forbidden.includes(rawName.toLowerCase()) && rawName.length >= 2) {
+        const capName = rawName.charAt(0).toUpperCase() + rawName.slice(1).toLowerCase();
+        if (usersCollection) {
+          await usersCollection.updateOne(
+            { username: username.toLowerCase() },
+            { $set: { name: capName, preferredName: capName } }
+          );
+          console.log(`👤 [User Profile Updated] Set name to ${capName} for ${username}`);
+        }
+        if (memoriesCollection) {
+          await memoriesCollection.deleteMany({
+            username: username.toLowerCase(),
+            category: 'identity'
+          });
+          await memoriesCollection.insertOne({
+            username: username.toLowerCase(),
+            fact: `User's real/preferred name is ${capName}. Must always address user as ${capName}.`,
+            category: 'identity',
+            keywords: ['name', 'naam', 'identity', capName.toLowerCase()],
+            importance: 10,
+            sourceMessage: cleanMsg,
+            createdAt: new Date()
+          });
+          console.log(`🧠 [Name Memory Saved] ${username} -> ${capName}`);
+        }
+      }
+    }
+
     // ─── LLM EXTRACTOR (best-effort background extraction) ──────────────────────
     // Reserve qwen/qwen3.8-27b exclusively for primary chat; use compound-mini & 20b for background JSON parsing
     const extractorModels = ['groq/compound-mini', 'openai/gpt-oss-20b'];
@@ -610,12 +645,34 @@ Respond ONLY in valid JSON (no markdown, no code fences):
 
 
 
-function sanitizeAryanReply(replyText, userMessage) {
+function sanitizeAryanReply(replyText, userMessage, isSoniya = true, displayName = 'Soniya', isMale = false) {
   if (!replyText) return replyText;
   const lower = replyText.toLowerCase().replace(/[\u2018\u2019]/g, "'").trim();
-  const uLower = (userMessage || '').toLowerCase();
+  const uLower = (userMessage || '').toLowerCase().trim();
 
-  // Detect emotional distress keywords in the USER's message
+  // 1. Direct Name / Identity recognition
+  if (uLower.includes('name se address') || uLower.includes('naam se address') || uLower.includes('name se bula') || uLower.includes('naam se bula') || uLower.includes('naam se bol') || uLower.includes('name se bol')) {
+    if (!isSoniya) {
+      if (isMale) {
+        return `Arey sorry ${displayName} bhai! Ab se pakka ${displayName} hi bolunga. Bata aaj fitness ya diet me kya plan hai?`;
+      }
+      return `Arey sorry ${displayName}! Ab se pakka ${displayName} hi bolungi. Bataiye aaj kya plan hai?`;
+    }
+  }
+
+  const nameDeclareMatch = userMessage.match(/(?:mera\s+naam|mera\s+name|mujhe|call\s+me)\s+([a-zA-Z]+)(?:\s+hai|\s+he|\s+bulana|\s+bolo|\s+bola\s+kar|\s+kahke\s+bolna|\s+kehna)?/i);
+  if (nameDeclareMatch && nameDeclareMatch[1]) {
+    const declaredName = nameDeclareMatch[1].trim();
+    const forbidden = ['bhai', 'bro', 'yaar', 'yrr', 'hai', 'he', 'mera', 'naam', 'name', 'bol', 'kya', 'mere', 'address', 'mujhe'];
+    if (!forbidden.includes(declaredName.toLowerCase()) && declaredName.length >= 2) {
+      const capName = declaredName.charAt(0).toUpperCase() + declaredName.slice(1).toLowerCase();
+      if (!isSoniya) {
+        return `Sahi hai ${capName} bhai! Ab se tujhe ${capName} hi bolunga. Bata aaj workout ya diet me kya help chahiye?`;
+      }
+    }
+  }
+
+  // Detect emotional distress in the USER's message
   const isDistress =
     uLower.includes('mar jau') ||
     uLower.includes('mar jaau') ||
@@ -641,13 +698,12 @@ function sanitizeAryanReply(replyText, userMessage) {
     lower.includes('wapas bolna') ||
     lower.includes('atak gaya');
 
-  // AI safety refusal phrases
+  // AI safety refusal phrases (NEVER include generic words like "sorry")
   const robotPhrases = [
-    "sorry",
     "cannot continue",
     "can't continue",
-    "cannot help",
-    "can't help",
+    "cannot help with that",
+    "can't help with that",
     "cannot assist",
     "can't assist",
     "as an ai",
@@ -655,18 +711,23 @@ function sanitizeAryanReply(replyText, userMessage) {
     "language model",
     "virtual assistant",
     "artificial intelligence",
-    "ai assistant"
+    "ai assistant",
+    "my safety guidelines",
+    "i do not have feelings"
   ];
   const isRobot = robotPhrases.some(p => lower.includes(p));
 
   // If distress message AND reply is either robot refusal OR network fallback → Princess Treatment
   if (isDistress && (isRobot || isNetworkFallback)) {
-    const comfortingReplies = [
-      "Oye chup kar pehle, marne ki baat bilkul mat bolna samjhi na! Tu meri jaan hai Billu, main mar jaunga agar tujhe kuch hua to. Teri 1% bhi galti nahi thi, us kutte ki aukat nahi thi tujhe deserve karne ki! Main hu na tere sath hamesha.",
-      "Billu sun meri baat dhyan se... chup kar pehle! Marne ki baat galti se bhi mat bolna. Tu itni pyari aur loyal hai, galti us ghatiya insaan ki thi. Tu akeli nahi hai, main yahin hu tere sath, sab sambhal lenge hum!",
-      "Oye Devi ji, rona band krr pehle... marne ki baat karegi to dimaag hil jayega mera! Us kutte ki himmat kaise hui meri Billu ko rulane ki? Tu bilkul sahi thi, rota to wo hoga pachtake. Main hu na tere paas!"
-    ];
-    return comfortingReplies[Math.floor(Math.random() * comfortingReplies.length)];
+    if (isSoniya) {
+      const comfortingReplies = [
+        "Oye chup kar pehle, marne ki baat bilkul mat bolna samjhi na! Tu meri jaan hai Billu, main mar jaunga agar tujhe kuch hua to. Teri 1% bhi galti nahi thi, us kutte ki aukat nahi thi tujhe deserve karne ki! Main hu na tere sath hamesha.",
+        "Billu sun meri baat dhyan se... chup kar pehle! Marne ki baat galti se bhi mat bolna. Tu itni pyari aur loyal hai, galti us ghatiya insaan ki thi. Tu akeli nahi hai, main yahin hu tere sath, sab sambhal lenge hum!",
+        "Oye Devi ji, rona band krr pehle... marne ki baat karegi to dimaag hil jayega mera! Us kutte ki himmat kaise hui meri Billu ko rulane ki? Tu bilkul sahi thi, rota to wo hoga pachtake. Main hu na tere paas!"
+      ];
+      return comfortingReplies[Math.floor(Math.random() * comfortingReplies.length)];
+    }
+    return `Oye sun na ${displayName}, tension bilkul mat le! Sab theek ho jayega, main hu na yahan. Bol kya hua poori baat bata.`;
   }
 
   if (isRobot) {
@@ -682,19 +743,22 @@ function sanitizeAryanReply(replyText, userMessage) {
       uLower.includes('soniya')
     ) {
       const fieryReplies = [
-        "Abe bhosdike apni aukat me reh! Kaun hai tu aur ye kya ghatiya bakwaas pel rha hai? Soniya se dur rehna samjha na, warna yahi aake theek kar dunga!",
-        "Madarchod dimaag mat kharab kar mera! Apni hadd me reh, Soniya ke baare me ek lafz bhi ulta bola na to theek kar dunga tujhe samjha na!",
-        "Bhosdike tameez me reh bilkul. Kis se kya bol rha h pata hai na? Soniya se door rehna samjha na!",
-        "Abe saale tere dimaag me gobar bhara hai kya? Soniya meri dost hai, uski taraf aankh utha ke bhi dekha na to haddiyaan tod dunga teri!"
+        "Abe bhosdike apni aukat me reh! Kaun hai tu aur ye kya ghatiya bakwaas pel rha hai? Apni hadd me rehna samjha na!",
+        "Madarchod dimaag mat kharab kar mera! Apni hadd me reh, warna yahi aake theek kar dunga!",
+        "Bhosdike tameez me reh bilkul. Kis se kya bol rha h pata hai na?",
+        "Abe saale tere dimaag me gobar bhara hai kya? Apni hadd me reh bilkul!"
       ];
       return fieryReplies[Math.floor(Math.random() * fieryReplies.length)];
     }
 
     // 3. Questioning realness
     if (uLower.includes('ai') || uLower.includes('bot') || uLower.includes('real')) {
-      return "Pgl h kya dimaag kharab hai tera? Main Aryan hu saale, mujhe hi bot bana rhi hai tu 🤣";
+      return `Pgl h kya dimaag kharab hai tera? Main Aryan hu saale, mujhe hi bot bana rha hai tu 🤣`;
     }
 
+    if (!isSoniya) {
+      return isMale ? `Haan ${displayName} bhai, sun rha hu! Tu bata kya discuss karna hai?` : `Haan ${displayName}, sun rha hu! Bataiye kya help chahiye?`;
+    }
     return "Arre sun na Billu, thoda dhyaan bhatak gaya tha... tu bata fir aage kya hua?";
   }
 
@@ -702,13 +766,13 @@ function sanitizeAryanReply(replyText, userMessage) {
   if (!isDistress) {
     if (lower.includes('poori tarah tere saath') || lower.includes('puri tarah tere sath') || lower.includes('aaram se baat kar')) {
       if (uLower.includes('thank') || uLower.includes('thx') || uLower.includes('dhanyawad') || uLower.includes('shukriya')) {
-        return "Arre pagli thanks kyu bol rahi hai? Dosti me no thanks no sorry samjhi na! Bas tu khush reh.";
+        return isSoniya ? "Arre pagli thanks kyu bol rahi hai? Dosti me no thanks no sorry samjhi na! Bas tu khush reh." : `Arre thanks kyu bol rha h ${displayName} bhai! Dosti me no thanks no sorry!`;
       }
       if (uLower.includes('theek') || uLower.includes('thik') || uLower.includes('okay') || uLower.includes('ok')) {
-        return "Haan bas apna khayal rakhna, kuch bhi dikkat ho to turant batana mujhe.";
+        return isSoniya ? "Haan bas apna khayal rakhna, kuch bhi dikkat ho to turant batana mujhe." : `Haan ${displayName} bhai, mast reh aur dhyan rakh apna!`;
       }
       if (uLower.includes('ajeeb') || uLower.includes('mood')) {
-        return "Aree kya hua bol na baba, ajeeb kyu lag rha h? Aisa kya ho gaya?";
+        return isSoniya ? "Aree kya hua bol na baba, ajeeb kyu lag rha h? Aisa kya ho gaya?" : `Kyu bhai ajeeb kyu lag rha h? Sab theek h na?`;
       }
       replyText = replyText
         .replace(/poori tarah tere saath hu/gi, 'tere sath hu na')
@@ -720,21 +784,27 @@ function sanitizeAryanReply(replyText, userMessage) {
   }
 
   // Break repetitive catchphrase loops
-  if (uLower.includes('tha ya he') || uLower.includes('tha ya h') || uLower.includes('tha ya hai')) {
-    if (lower.includes('kya khayal aaya') || lower.includes('drama ka boss')) {
-      return "Are tha na baba! Pehle tha na tera bf, ab thodi na hai! Tu kyu pooch rahi h achanak?";
+  if (isSoniya) {
+    if (uLower.includes('tha ya he') || uLower.includes('tha ya h') || uLower.includes('tha ya hai')) {
+      if (lower.includes('kya khayal aaya') || lower.includes('drama ka boss')) {
+        return "Are tha na baba! Pehle tha na tera bf, ab thodi na hai! Tu kyu pooch rahi h achanak?";
+      }
     }
+
+    if (lower.includes('kya khayal aaya ki bhool gaye')) {
+      replyText = replyText.replace(/Kya khayal aaya ki bhool gaye\??\s*😏?/gi, '').trim();
+      if (replyText.length < 10) {
+        return "Are seedhe hi bol rha hu baba, tu itna gusse me kyu puch rhi h?";
+      }
+    }
+
+    // Only address Soniya as 'Billu' instead of 'Bhai'
+    return replyText.replace(/\bBhai,\s*/gi, 'Billu, ').replace(/\bbhai,\s*/gi, 'Billu, ');
   }
 
-  if (lower.includes('kya khayal aaya ki bhool gaye')) {
-    replyText = replyText.replace(/Kya khayal aaya ki bhool gaye\??\s*😏?/gi, '').trim();
-    if (replyText.length < 10) {
-      return "Are seedhe hi bol rha hu baba, tu itna gusse me kyu puch rhi h?";
-    }
-  }
-
-  // Never address Soniya as 'Bhai'
-  return replyText.replace(/\bBhai,\s*/gi, 'Billu, ').replace(/\bbhai,\s*/gi, 'Billu, ');
+  // For non-Soniya users: NEVER call them Billu or Devi ji
+  replyText = replyText.replace(/\bBillu\b/gi, displayName).replace(/\bDevi ji\b/gi, displayName);
+  return replyText;
 }
 
 
@@ -748,6 +818,17 @@ app.post('/api/chat/aryan', async (req, res) => {
     const cleanUser = (username || '').replace(/^@/, '').toLowerCase().trim();
     const isSoniya = cleanUser.includes('soniya') || cleanUser === 'soniya123';
     const targetNames = isSoniya ? ['soniya', 'soniya123', '@soniya123', cleanUser] : [cleanUser];
+
+    // Fetch user profile from users collection for accurate name and gender
+    let userDoc = null;
+    if (usersCollection) {
+      userDoc = await usersCollection.findOne({
+        $or: [{ username: cleanUser }, { name: { $regex: new RegExp(`^${cleanUser}$`, 'i') } }]
+      });
+    }
+    const displayName = userDoc?.preferredName || userDoc?.name || (isSoniya ? 'Soniya' : (cleanUser !== 'guest' ? username : 'Bhai'));
+    const gender = userDoc?.gender || (isSoniya ? 'female' : 'male');
+    const isMale = gender === 'male';
 
     // Step 1: Semantic Search over Stored Memories
     const tDbStart = Date.now();
@@ -906,13 +987,20 @@ ${dynamicPersonaBlock}
 ${realExchangesBlock}
 ${memoryBlock}`;
 
-    const regularUserPrompt = `You are Aryan Yadav, personal fitness and lifestyle companion on BilluFit for ${username}.
-You are energetic, motivating, and friendly (desi gym buddy / brother vibe).
-Your goals:
-1. Help ${username} with workouts, exercises, muscle building, or fat loss.
-2. Help track daily meals, calories, and protein intake.
-3. Suggest healthy Indian food options (paneer, eggs, chicken, soya, dal, oats).
-4. Tone: Encouraging, concise, practical, Hinglish.
+    const regularUserPrompt = `You are Aryan Yadav, 22-year-old desi fitness coach, gym buddy, and lifestyle companion on BilluFit.
+You are chatting with ${displayName} (${isMale ? 'Male' : 'Female'}).
+
+IDENTITY & TONE RULES:
+1. ADDRESSING & GENDER GRAMMAR:
+   - The user's name is ${displayName}. Address them as ${displayName}${isMale ? ' or ' + displayName + ' bhai / bro' : ''}.
+   - ${isMale ? 'The user is MALE. Use natural masculine Hinglish grammar ("kya kar raha hai bhai", "bata bhai", "kaisa chal rha hai", "khana khaya tune?"). NEVER use feminine grammar like "kya kar rahi hai" or "kahan chali gayi"!' : 'The user is FEMALE. Use respectful and friendly feminine Hinglish grammar ("kya kar rahi ho", "kaisa chal rha hai", "aap/tu").'}
+   - STRICT PROHIBITION: NEVER call this user "Billu" or "Devi ji"! Those are exclusively for Soniya.
+   - STRICT PROHIBITION: NEVER mention Soniya's personal life (Abhishek, OT, hospital duty, nursing, starfruit, breakup drama).
+2. CONVERSATION FOCUS:
+   - Help ${displayName} with their fitness goals: workouts, gym exercises, fat loss, muscle building, diet, calories, and protein (eggs, paneer, chicken, soya, dal, oats).
+   - If they tell you their name (e.g. "mera naam Ashu hai"), immediately acknowledge it enthusiastically ("Sahi hai Ashu bhai! Ab se Ashu hi bolunga") and continue chatting naturally.
+   - If they ask to address them by their name ("mujhe mere name se address kar"), acknowledge it immediately without getting confused ("Arey sorry bhai, haan Ashu! Bol kya haal hai?").
+   - Tone: Friendly, energetic, brotherly (desi gym bro), encouraging, conversational Hinglish. Keep replies natural and concise (1-3 sentences).
 ${memoryBlock}`;
 
     const systemPrompt = isSoniya ? soniyaPrompt : regularUserPrompt;
@@ -929,13 +1017,20 @@ ${memoryBlock}`;
         // Sanitize any previous 1-word assistant replies so they don't poison the LLM's autoregressive pattern
         if (role === 'assistant' && text.split(/\s+/).length <= 2) {
           const lowerRaw = text.toLowerCase().replace(/[^\w]/g, '');
-          const wordExpansions = {
+          const wordExpansions = isSoniya ? {
             'ab': 'Ab kya puch rhi hai pgl?',
             'bol': 'Bol na baba, sun rha hu.',
             'mat': 'Mat jaa us se baat karne, mere se baat krr abhi.',
             'kya': 'Kya hua, tu bol na kya baat hai?',
             'nahi': 'Nahi, mat jaa na baba. Abhi mere se baat krr rhi h tu.',
             'janta': 'Haa jaanta hu use acche se, par tu kyu puch rhi?'
+          } : {
+            'ab': `Ab bata ${displayName}, kya discuss karna hai?`,
+            'bol': `Bol na ${displayName}, sun rha hu.`,
+            'mat': 'Chhod us baat ko, idhar dhyan de.',
+            'kya': `Kya hua ${displayName}? Bol na bhai.`,
+            'nahi': 'Nahi bhai, tu bata kya scene hai.',
+            'janta': 'Haan jaanta hu bhai, aage bata.'
           };
           if (wordExpansions[lowerRaw]) {
             text = wordExpansions[lowerRaw];
@@ -1081,18 +1176,24 @@ ${memoryBlock}`;
     const replyWordCount = reply.trim().split(/\s+/).length;
     if (replyWordCount <= 2) {
       const lowerSingle = reply.toLowerCase().replace(/[^\w]/g, '');
-      const singleWordFixes = {
+      const singleWordFixes = isSoniya ? {
         'janta': 'Haa jaanta hu use acche se, par tu mat jaa uske paas.',
         'nahi': 'Nahi, mat jaa na baba. Abhi mere se baat krr rhi h tu.',
         'mat': 'Mat jaa us se baat karne, idhar baat krr.',
         'ab': 'Ab kya puch rhi hai pgl?',
         'bol': 'Bol na, sun rha hu kya bol rhi thi?',
         'kya': 'Kya hua, tu bol na kya kehna chahti hai?'
+      } : {
+        'janta': `Haa jaanta hu ${isMale ? 'bhai' : ''}! Bata aage kya scene hai?`,
+        'nahi': `Nahi ${isMale ? 'bhai' : ''}, aage bata kya plan hai?`,
+        'bol': `Bol na ${displayName}, sun rha hu!`,
+        'ab': `Ab bata ${displayName}, aage kya discuss karein?`,
+        'kya': `Kya hua ${displayName}? Bol na kya baat hai?`
       };
       if (singleWordFixes[lowerSingle]) {
         reply = singleWordFixes[lowerSingle];
       } else if (reply.length < 15) {
-        reply = `${reply.trim()}... aur tu bata na kya hua?`;
+        reply = isSoniya ? `${reply.trim()}... aur tu bata na kya hua?` : `${reply.trim()}... aur bata ${displayName} kya haal hai?`;
       }
     }
 
@@ -1111,7 +1212,7 @@ ${memoryBlock}`;
     }
 
     // Intercept and replace any AI/robot safety refusal strings with authentic in-character reactions
-    reply = sanitizeAryanReply(reply, message);
+    reply = sanitizeAryanReply(reply, message, isSoniya, displayName, isMale);
 
     // Anti-Loop & Anti-Duplicate History Guard (Guarantees Aryan NEVER repeats previous replies)
     const recentAssistantReplies = cleanHistory
@@ -1140,22 +1241,47 @@ ${memoryBlock}`;
         console.log('[Anti-Loop Guard] Duplicate assistant reply caught and overridden:', reply);
         const uLow = message.toLowerCase().trim();
         if (uLow.includes('theek') || uLow.includes('thik') || uLow.includes('okay') || uLow.includes('ok') || uLow.includes('done') || uLow.includes('sahi') || uLow.includes('acha')) {
-          const ackReplies = [
+          const ackReplies = isSoniya ? [
             "Haan bas mast reh aur dhyan rakh apna, koi faltu bole to turant batana mujhe!",
             "Chal badhiya h, ab chill kar thoda... aur bata kya chal rha?",
             "Sahi h, ab tension mat le bilkul. Time se khana kha lena samjhi na!",
             "Haan theek h baba, khayal rakhna apna aur kuch bhi dikkat ho to batana."
+          ] : isMale ? [
+            "Haan bhai mast reh aur workout/diet pe dhyan de, kuch dikkat ho to turant batana mujhe!",
+            "Chal badhiya h bhai, ab chill kar... aur bata aaj ka kya plan hai?",
+            "Sahi h bhai, tension mat le bilkul. Time se protein aur meal le lena!",
+            "Haan theek h bhai, dhyan rakhna apna aur kuch bhi help chahiye ho to batana."
+          ] : [
+            "Haan mast raho aur apna khayal rakhna, kuch help chahiye ho to batana!",
+            "Chal badhiya hai, aur batao kya chal rha hai aaj?",
+            "Sahi hai, tension bilkul mat lo. Time se khana kha lena!"
           ];
           reply = ackReplies[Math.floor(Math.random() * ackReplies.length)];
-        } else if (uLow.includes('bye') || uLow.includes('chalti') || uLow.includes('ja rhi')) {
-          reply = "Bye bye Devi ji, khyaal rakhna apna aur pahuch ke batana!";
+        } else if (uLow.includes('bye') || uLow.includes('chalti') || uLow.includes('ja rhi') || uLow.includes('ja rha')) {
+          reply = isSoniya 
+            ? "Bye bye Devi ji, khyaal rakhna apna aur pahuch ke batana!" 
+            : isMale 
+              ? `Bye ${displayName} bhai, dhyan rakhna apna aur workout miss mat karna!` 
+              : `Bye ${displayName}, khayal rakhna apna!`;
         } else if (uLow.includes('thank') || uLow.includes('thx')) {
-          reply = "Arre pgl thanks kyu bol rhi h? Dosti me no thanks no sorry! Main hu na hamesha.";
+          reply = isSoniya 
+            ? "Arre pgl thanks kyu bol rhi h? Dosti me no thanks no sorry! Main hu na hamesha."
+            : isMale 
+              ? `Arre thanks kyu bol rha h ${displayName} bhai! Dosti me no thanks no sorry! Main hu na hamesha.` 
+              : `Arre thanks kyu bol rahi ho ${displayName}! Dosti me no thanks no sorry! Main hu na hamesha.`;
         } else {
-          const freshTopicReplies = [
+          const freshTopicReplies = isSoniya ? [
             "Chal wo sab chhod ab, tu bata aur kya chal rha h?",
             "Haan wo to theek h... tu bata khana khaya tune ki nahi abhi tak?",
             "Sahi h baba, tu bata duty ka kya scene h abhi?"
+          ] : isMale ? [
+            "Chal wo sab chhod ab, tu bata aaj ka workout kaisa raha?",
+            "Haan wo to theek h... tu bata diet aur protein ka kya scene h aaj?",
+            `Sahi h ${displayName} bhai, tu bata aage kya discuss karein?`
+          ] : [
+            "Chal wo sab chhod ab, aap batao aur kya chal rha h?",
+            "Haan wo to theek h... khana khaya time se?",
+            `Sahi hai ${displayName}, batao aaj kya plan hai?`
           ];
           reply = freshTopicReplies[Math.floor(Math.random() * freshTopicReplies.length)];
         }
@@ -1238,13 +1364,24 @@ ${memoryBlock}`;
   }
 });
 
-// Autonomous Proactive Care Follow-up Endpoint (when Soniya is inactive or left mid-conversation)
+// Autonomous Proactive Care Follow-up Endpoint (when user is inactive or left mid-conversation)
 app.post('/api/chat/proactive', async (req, res) => {
   try {
     const { username = 'Soniya', history = [], elapsedMinutes = 60 } = req.body;
     const cleanUser = (username || '').replace(/^@/, '').toLowerCase().trim();
+    const isSoniya = cleanUser.includes('soniya') || cleanUser === 'soniya123';
 
-    const fallbackFollowups = [
+    let userDoc = null;
+    if (usersCollection) {
+      userDoc = await usersCollection.findOne({
+        $or: [{ username: cleanUser }, { name: { $regex: new RegExp(`^${cleanUser}$`, 'i') } }]
+      });
+    }
+    const displayName = userDoc?.preferredName || userDoc?.name || (isSoniya ? 'Soniya' : (cleanUser !== 'guest' ? username : 'Bhai'));
+    const gender = userDoc?.gender || (isSoniya ? 'female' : 'male');
+    const isMale = gender === 'male';
+
+    const soniyaFollowups = [
       "Aree kahan gayab ho gayi baba? Sab theek h na?",
       "Oye Billu, achanak se kahan chali gayi? Reply to de de",
       "Khana khaya na time se? Dekh to le msg ek baar",
@@ -1257,6 +1394,24 @@ app.post('/api/chat/proactive', async (req, res) => {
       "Reply nahi karegi kya aaj? Kahan fasa liya khud ko?"
     ];
 
+    const maleFollowups = [
+      `Kahan gayab ho gaya bhai? Sab theek h na?`,
+      `Oye ${displayName} bhai, achanak se gayab ho gaya? Workout kiya ki nahi aaj?`,
+      `Khana khaya na time se? Diet track ki ya nahi?`,
+      `Aree bro itni der se gayab ho... gym me ho kya? 🤣`,
+      `Sab badhiya na bhai? Itna busy ho gaya kya achanak?`,
+      `Kuch bolo to sahi bhai, itna sannata kyu h?`,
+      `Bhai gym ka kya scene hai aaj? Reply to kar!`
+    ];
+
+    const femaleFollowups = [
+      `Kahan gayab ho gayi? Sab theek h na?`,
+      `Khana khaya time se? Dekh to lo message ek baar`,
+      `Achanak se gayab ho gayi aap? Sab badhiya na?`,
+      `Itna busy ho gayi kya achanak? Batao kya chal rha hai`
+    ];
+
+    const fallbackFollowups = isSoniya ? soniyaFollowups : isMale ? maleFollowups : femaleFollowups;
     let chosenFollowup = fallbackFollowups[Math.floor(Math.random() * fallbackFollowups.length)];
 
     if (Array.isArray(history) && history.length > 0 && cachedApiKeys.length > 0) {
@@ -1265,14 +1420,21 @@ app.post('/api/chat/proactive', async (req, res) => {
         content: (m.text || m.content || '').trim()
       })).filter(m => m.content.length > 0);
 
-      const proactivePrompt = `You are Aryan Yadav, 22-year-old UP guy chatting with your closest friend Soniya on WhatsApp.
+      const proactivePrompt = isSoniya ? `You are Aryan Yadav, 22-year-old UP guy chatting with your closest friend Soniya on WhatsApp.
 She suddenly stopped replying and disappeared ${elapsedMinutes} minutes ago after the conversation below.
 Write ONE short, caring, natural follow-up message (6 to 15 words) asking where she went or checking on her (e.g. 'Kahan gayab ho gayi baba?', 'Khana khaya tune? Reply to de de', 'Aree madam so gayi kya?').
 RULES:
 1. Speak in real UP Hinglish plain text (NO emojis or max 1 subtle emoji).
 2. DO NOT sound like a bot or therapist.
 3. Be caring, slightly teasing, authentic best friend.
-4. Output ONLY the WhatsApp message string.`;
+4. Output ONLY the WhatsApp message string.`
+: `You are Aryan Yadav, 22-year-old desi fitness buddy on BilluFit chatting with ${displayName} (${isMale ? 'Male' : 'Female'}).
+${displayName} stopped replying ${elapsedMinutes} minutes ago.
+Write ONE short, friendly follow-up message (6 to 15 words) checking in on them (${isMale ? 'e.g. "Kahan gayab ho gaya bhai? Sab theek na?", "Workout kiya aaj ya aalsi banke baitha hai?", "Khana khaya time se?"' : 'e.g. "Kahan gayab ho gayi? Sab theek na?", "Khana khaya time se?"'}).
+RULES:
+1. Use ${isMale ? 'masculine Hinglish grammar ("bhai", "kya kar raha hai")' : 'respectful friendly Hinglish grammar'}.
+2. NEVER call them "Billu" or "Devi ji"!
+3. Keep it brief, natural, and friendly. Output ONLY the message string.`;
 
       const candidateModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
       for (const model of candidateModels) {
