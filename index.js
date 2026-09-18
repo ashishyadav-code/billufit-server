@@ -1252,6 +1252,9 @@ RULES:
     res.status(500).json({ error: err.message });
   }
 });
+
+// Get Dynamic Self-Learned Persona State from MongoDB Atlas
+app.get('/api/admin/dynamic-persona', async (req, res) => {
   try {
     const docs = dynamicPersonaCollection ? await dynamicPersonaCollection.find({}).toArray() : [];
     res.json({
