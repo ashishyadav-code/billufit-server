@@ -1172,8 +1172,86 @@ ${memoryBlock}`;
   }
 });
 
-// Get Dynamic Self-Learned Persona State from MongoDB Atlas
-app.get('/api/admin/dynamic-persona', async (req, res) => {
+// Autonomous Proactive Care Follow-up Endpoint (when Soniya is inactive or left mid-conversation)
+app.post('/api/chat/proactive', async (req, res) => {
+  try {
+    const { username = 'Soniya', history = [], elapsedMinutes = 60 } = req.body;
+    const cleanUser = (username || '').replace(/^@/, '').toLowerCase().trim();
+
+    const fallbackFollowups = [
+      "Aree kahan gayab ho gayi baba? Sab theek h na?",
+      "Oye Billu, achanak se kahan chali gayi? Reply to de de",
+      "Khana khaya na time se? Dekh to le msg ek baar",
+      "Hello madam, itni der se gayab ho... so gayi kya?",
+      "Aree sun na, baat karte karte kahan bhaag gayi tu?",
+      "Sab badhiya na? Itna busy ho gayi kya achanak?",
+      "Aree pgl naraz ho ke baith gayi kya? Bol na kya hua",
+      "Oye Devi ji, phone side me rakh ke bhool gayi kya? 🤣",
+      "Kuch bolo to sahi, itna sannata kyu h baba?",
+      "Reply nahi karegi kya aaj? Kahan fasa liya khud ko?"
+    ];
+
+    let chosenFollowup = fallbackFollowups[Math.floor(Math.random() * fallbackFollowups.length)];
+
+    if (Array.isArray(history) && history.length > 0 && cachedApiKeys.length > 0) {
+      const recentHistory = history.slice(-6).map(m => ({
+        role: (m.sender === 'user' || m.role === 'user') ? 'user' : 'assistant',
+        content: (m.text || m.content || '').trim()
+      })).filter(m => m.content.length > 0);
+
+      const proactivePrompt = `You are Aryan Yadav, 22-year-old UP guy chatting with your closest friend Soniya on WhatsApp.
+She suddenly stopped replying and disappeared ${elapsedMinutes} minutes ago after the conversation below.
+Write ONE short, caring, natural follow-up message (6 to 15 words) asking where she went or checking on her (e.g. 'Kahan gayab ho gayi baba?', 'Khana khaya tune? Reply to de de', 'Aree madam so gayi kya?').
+RULES:
+1. Speak in real UP Hinglish plain text (NO emojis or max 1 subtle emoji).
+2. DO NOT sound like a bot or therapist.
+3. Be caring, slightly teasing, authentic best friend.
+4. Output ONLY the WhatsApp message string.`;
+
+      const candidateModels = ['qwen/qwen3.8-27b', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+      for (const model of candidateModels) {
+        try {
+          const keyDoc = cachedApiKeys.find(k => k.status === 'active') || cachedApiKeys[0];
+          const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${keyDoc.key}`,
+              'Content-Type': 'application/json',
+              'User-Agent': 'Mozilla/5.0'
+            },
+            body: JSON.stringify({
+              model,
+              messages: [
+                { role: 'system', content: proactivePrompt },
+                ...recentHistory
+              ],
+              temperature: 0.75,
+              presence_penalty: 0.4,
+              frequency_penalty: 0.5,
+              max_tokens: 150
+            })
+          });
+          if (groqRes.ok) {
+            const data = await groqRes.json();
+            const text = data.choices?.[0]?.message?.content?.trim();
+            if (text && text.length >= 6 && !text.toLowerCase().includes('poori tarah')) {
+              chosenFollowup = text.replace(/^["']|["']$/g, '');
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    res.json({
+      success: true,
+      followup: chosenFollowup,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
   try {
     const docs = dynamicPersonaCollection ? await dynamicPersonaCollection.find({}).toArray() : [];
     res.json({
